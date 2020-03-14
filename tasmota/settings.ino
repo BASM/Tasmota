@@ -733,7 +733,7 @@ void SettingsDefaultSet2(void) {
   Settings.param[P_RGB_REMAP] = RGB_REMAP_RGBW;
   Settings.sleep = APP_SLEEP;
   if (Settings.sleep < 50) {
-    Settings.sleep = 50;                // Default to 50 for sleep, for now
+    Settings.sleep = 0;                // Default to 50 for sleep, for now
   }
 
   // Module
