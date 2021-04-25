@@ -35,7 +35,7 @@ static unsigned long oswatch_last_loop_time;
 uint8_t oswatch_blocked_loop = 0;
 
 #ifndef USE_WS2812_DMA  // Collides with Neopixelbus but solves exception
-//void OsWatchTicker() ICACHE_RAM_ATTR;
+//void OsWatchTicker() IRAM_ATTR;
 #endif  // USE_WS2812_DMA
 
 #ifdef USE_KNX
@@ -513,6 +513,14 @@ char* UpperCase_P(char* dest, const char* source)
     *write++ = toupper(ch);
   }
   return dest;
+}
+
+char* StrStr_P(const char* source, const char* search) {
+  char case_source[strlen(source) +1];
+  UpperCase_P(case_source, source);
+  char case_search[strlen(search) +1];
+  UpperCase_P(case_search, search);
+  return strstr(case_source, case_search);
 }
 
 char* Trim(char* p)
@@ -1295,7 +1303,7 @@ void DumpConvertTable(void) {
     jsflg = true;
     if ((ResponseAppend_P(PSTR("\"%d\":\"%d\""), i, data) > (MAX_LOGSZ - TOPSZ)) || (i == nitems(kGpioConvert) -1)) {
       ResponseJsonEndEnd();
-      MqttPublishPrefixTopic_P(RESULT_OR_STAT, XdrvMailbox.command);
+      MqttPublishPrefixTopicRulesProcess_P(RESULT_OR_STAT, XdrvMailbox.command);
       jsflg = false;
       lines++;
     }
@@ -1310,7 +1318,7 @@ void DumpConvertTable(void) {
     jsflg = true;
     if ((ResponseAppend_P(PSTR("\"%d\":\"%d\""), i, data) > (MAX_LOGSZ - TOPSZ)) || (i == nitems(kAdcNiceList) -1)) {
       ResponseJsonEndEnd();
-      MqttPublishPrefixTopic_P(RESULT_OR_STAT, XdrvMailbox.command);
+      MqttPublishPrefixTopicRulesProcess_P(RESULT_OR_STAT, XdrvMailbox.command);
       jsflg = false;
       lines++;
     }
@@ -1320,8 +1328,8 @@ void DumpConvertTable(void) {
 */
 #endif  // ESP8266
 
-int ICACHE_RAM_ATTR Pin(uint32_t gpio, uint32_t index = 0);
-int ICACHE_RAM_ATTR Pin(uint32_t gpio, uint32_t index) {
+int IRAM_ATTR Pin(uint32_t gpio, uint32_t index = 0);
+int IRAM_ATTR Pin(uint32_t gpio, uint32_t index) {
   uint16_t real_gpio = gpio << 5;
   uint16_t mask = 0xFFE0;
   if (index < GPIO_ANY) {
@@ -1645,6 +1653,22 @@ bool JsonTemplate(char* dataBuf)
     Settings.user_template_base = base -1;  // Default WEMOS
   }
 
+  val = root[PSTR(D_JSON_CMND)];
+  if (val) {
+    if ((USER_MODULE == Settings.module) || (StrStr_P(val.getStr(), PSTR(D_CMND_MODULE " 0")))) {      // Only execute if current module = USER_MODULE = this template
+      char* backup_data = XdrvMailbox.data;
+      XdrvMailbox.data = (char*)val.getStr();  // Backlog commands
+      uint32_t backup_data_len = XdrvMailbox.data_len;
+      XdrvMailbox.data_len = 1;                // Any data
+      uint32_t backup_index = XdrvMailbox.index;
+      XdrvMailbox.index = 0;                   // Backlog0 - no delay
+      CmndBacklog();
+      XdrvMailbox.index = backup_index;
+      XdrvMailbox.data_len = backup_data_len;
+      XdrvMailbox.data = backup_data;
+    }
+  }
+
 //  AddLog(LOG_LEVEL_DEBUG, PSTR("TPL: Converted"));
 //  AddLogBufferSize(LOG_LEVEL_DEBUG, (uint8_t*)&Settings.user_template, sizeof(Settings.user_template) / 2, 2);
 
@@ -1812,27 +1836,37 @@ const uint8_t I2C_RETRY_COUNTER = 3;
 uint32_t i2c_active[4] = { 0 };
 uint32_t i2c_buffer = 0;
 
+#ifdef ESP32
+bool I2cValidRead(uint8_t addr, uint8_t reg, uint8_t size, uint32_t bus = 0);
+bool I2cValidRead(uint8_t addr, uint8_t reg, uint8_t size, uint32_t bus)
+#else
 bool I2cValidRead(uint8_t addr, uint8_t reg, uint8_t size)
+#endif
 {
   uint8_t retry = I2C_RETRY_COUNTER;
   bool status = false;
+#ifdef ESP32
+  TwoWire & myWire = (bus == 0) ? Wire : Wire1;
+#else
+  TwoWire & myWire = Wire;
+#endif
 
   i2c_buffer = 0;
   while (!status && retry) {
-    Wire.beginTransmission(addr);                       // start transmission to device
-    Wire.write(reg);                                    // sends register address to read from
-    if (0 == Wire.endTransmission(false)) {             // Try to become I2C Master, send data and collect bytes, keep master status for next request...
-      Wire.requestFrom((int)addr, (int)size);           // send data n-bytes read
-      if (Wire.available() == size) {
+    myWire.beginTransmission(addr);                       // start transmission to device
+    myWire.write(reg);                                    // sends register address to read from
+    if (0 == myWire.endTransmission(false)) {             // Try to become I2C Master, send data and collect bytes, keep master status for next request...
+      myWire.requestFrom((int)addr, (int)size);           // send data n-bytes read
+      if (myWire.available() == size) {
         for (uint32_t i = 0; i < size; i++) {
-          i2c_buffer = i2c_buffer << 8 | Wire.read();   // receive DATA
+          i2c_buffer = i2c_buffer << 8 | myWire.read();   // receive DATA
         }
         status = true;
       }
     }
     retry--;
   }
-  if (!retry) Wire.endTransmission();
+  if (!retry) myWire.endTransmission();
   return status;
 }
 
@@ -1916,19 +1950,30 @@ int32_t I2cRead24(uint8_t addr, uint8_t reg)
   return i2c_buffer;
 }
 
+#ifdef ESP32
+bool I2cWrite(uint8_t addr, uint8_t reg, uint32_t val, uint8_t size, uint32_t bus = 0);
+bool I2cWrite(uint8_t addr, uint8_t reg, uint32_t val, uint8_t size, uint32_t bus)
+#else
 bool I2cWrite(uint8_t addr, uint8_t reg, uint32_t val, uint8_t size)
+#endif
 {
   uint8_t x = I2C_RETRY_COUNTER;
 
+#ifdef ESP32
+  TwoWire & myWire = (bus == 0) ? Wire : Wire1;
+#else
+  TwoWire & myWire = Wire;
+#endif
+
   do {
-    Wire.beginTransmission((uint8_t)addr);              // start transmission to device
-    Wire.write(reg);                                    // sends register address to write to
+    myWire.beginTransmission((uint8_t)addr);              // start transmission to device
+    myWire.write(reg);                                    // sends register address to write to
     uint8_t bytes = size;
     while (bytes--) {
-      Wire.write((val >> (8 * bytes)) & 0xFF);          // write data
+      myWire.write((val >> (8 * bytes)) & 0xFF);          // write data
     }
     x--;
-  } while (Wire.endTransmission(true) != 0 && x != 0);  // end transmission
+  } while (myWire.endTransmission(true) != 0 && x != 0);  // end transmission
   return (x);
 }
 
@@ -1969,7 +2014,8 @@ int8_t I2cWriteBuffer(uint8_t addr, uint8_t reg, uint8_t *reg_data, uint16_t len
   return 0;
 }
 
-void I2cScan(char *devs, unsigned int devs_len)
+void I2cScan(char *devs, unsigned int devs_len, uint32_t bus = 0);
+void I2cScan(char *devs, unsigned int devs_len, uint32_t bus)
 {
   // Return error codes defined in twi.h and core_esp8266_si2c.c
   // I2C_OK                      0
@@ -1984,8 +2030,13 @@ void I2cScan(char *devs, unsigned int devs_len)
 
   snprintf_P(devs, devs_len, PSTR("{\"" D_CMND_I2CSCAN "\":\"" D_JSON_I2CSCAN_DEVICES_FOUND_AT));
   for (address = 1; address <= 127; address++) {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
+#ifdef ESP32
+    TwoWire & myWire = (bus == 0) ? Wire : Wire1;
+#else
+    TwoWire & myWire = Wire;
+#endif
+    myWire.beginTransmission(address);
+    error = myWire.endTransmission();
     if (0 == error) {
       any = 1;
       snprintf_P(devs, devs_len, PSTR("%s 0x%02x"), devs, address);
@@ -2026,10 +2077,19 @@ void I2cSetActive(uint32_t addr, uint32_t count = 1)
 //  AddLog(LOG_LEVEL_DEBUG, PSTR("I2C: Active %08X,%08X,%08X,%08X"), i2c_active[0], i2c_active[1], i2c_active[2], i2c_active[3]);
 }
 
-void I2cSetActiveFound(uint32_t addr, const char *types)
+void I2cSetActiveFound(uint32_t addr, const char *types, uint32_t bus = 0);
+void I2cSetActiveFound(uint32_t addr, const char *types, uint32_t bus)
 {
   I2cSetActive(addr);
+#ifdef ESP32
+  if (0 == bus) {
+    AddLog(LOG_LEVEL_INFO, S_LOG_I2C_FOUND_AT, types, addr);
+  } else {
+    AddLog(LOG_LEVEL_INFO, S_LOG_I2C_FOUND_AT_PORT, types, addr, bus);
+  }
+#else
   AddLog(LOG_LEVEL_INFO, S_LOG_I2C_FOUND_AT, types, addr);
+#endif // ESP32
 }
 
 bool I2cActive(uint32_t addr)
@@ -2041,14 +2101,24 @@ bool I2cActive(uint32_t addr)
   return false;
 }
 
+#ifdef ESP32
+bool I2cSetDevice(uint32_t addr, uint32_t bus = 0);
+bool I2cSetDevice(uint32_t addr, uint32_t bus)
+#else
 bool I2cSetDevice(uint32_t addr)
+#endif
 {
+#ifdef ESP32
+  TwoWire & myWire = (bus == 0) ? Wire : Wire1;
+#else
+  TwoWire & myWire = Wire;
+#endif
   addr &= 0x7F;         // Max I2C address is 127
   if (I2cActive(addr)) {
     return false;       // If already active report as not present;
   }
-  Wire.beginTransmission((uint8_t)addr);
-  return (0 == Wire.endTransmission());
+  myWire.beginTransmission((uint8_t)addr);
+  return (0 == myWire.endTransmission());
 }
 #endif  // USE_I2C
 
@@ -2079,7 +2149,7 @@ void SyslogAsync(bool refresh) {
   static uint32_t syslog_host_hash = 0;   // Syslog host name hash
   static uint32_t index = 1;
 
-  if (!TasmotaGlobal.syslog_level) { return; }
+  if (!TasmotaGlobal.syslog_level || TasmotaGlobal.global_state.network_down) { return; }
   if (refresh && !NeedLogRefresh(TasmotaGlobal.syslog_level, index)) { return; }
 
   char* line;
@@ -2091,8 +2161,16 @@ void SyslogAsync(bool refresh) {
     if (mxtime > 0) {
       uint32_t current_hash = GetHash(SettingsText(SET_SYSLOG_HOST), strlen(SettingsText(SET_SYSLOG_HOST)));
       if (syslog_host_hash != current_hash) {
+        IPAddress temp_syslog_host_addr;
+        int ok = WiFi.hostByName(SettingsText(SET_SYSLOG_HOST), temp_syslog_host_addr);  // If sleep enabled this might result in exception so try to do it once using hash
+        if (!ok || (0xFFFFFFFF == (uint32_t)temp_syslog_host_addr)) { // 255.255.255.255 is assumed a DNS problem
+          TasmotaGlobal.syslog_level = 0;
+          TasmotaGlobal.syslog_timer = SYSLOG_TIMER;
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Loghost DNS resolve failed (%s). " D_RETRY_IN " %d " D_UNIT_SECOND), SettingsText(SET_SYSLOG_HOST), SYSLOG_TIMER);
+          return;
+        }
         syslog_host_hash = current_hash;
-        WiFi.hostByName(SettingsText(SET_SYSLOG_HOST), syslog_host_addr);  // If sleep enabled this might result in exception so try to do it once using hash
+        syslog_host_addr = temp_syslog_host_addr;
       }
       if (!PortUdp.beginPacket(syslog_host_addr, Settings.syslog_port)) {
         TasmotaGlobal.syslog_level = 0;

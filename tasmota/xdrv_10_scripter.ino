@@ -56,17 +56,21 @@ keywords if then else endif, or, and are better readable for beginners (others m
 #define MAXFILT 5
 #endif
 #define SCRIPT_SVARSIZE 20
+#ifndef SCRIPT_MAXSSIZE
 #define SCRIPT_MAXSSIZE 48
+#endif
 #define SCRIPT_EOL '\n'
 #define SCRIPT_FLOAT_PRECISION 2
 #define PMEM_SIZE sizeof(Settings.script_pram)
 #define SCRIPT_MAXPERM (PMEM_SIZE)-4/sizeof(float)
 #define MAX_SCRIPT_SIZE MAX_RULE_SIZE*MAX_RULE_SETS
 
+#ifndef MAX_SARRAY_NUM
 #define MAX_SARRAY_NUM 32
+#endif
 
-//uint32_t EncodeLightId(uint8_t relay_id);
-//uint32_t DecodeLightId(uint32_t hue_id);
+uint32_t EncodeLightId(uint8_t relay_id);
+uint32_t DecodeLightId(uint32_t hue_id);
 
 #define SPECIAL_EEPMODE_SIZE 6200
 
@@ -201,10 +205,12 @@ void alt_eeprom_readBytes(uint32_t adr, uint32_t len, uint8_t *buf) {
 
 
 // offsets epoch readings by 1.1.2019 00:00:00 to fit into float with second resolution
+#ifndef EPOCH_OFFSET
 #define EPOCH_OFFSET 1546300800
+#endif
 
 enum {OPER_EQU=1,OPER_PLS,OPER_MIN,OPER_MUL,OPER_DIV,OPER_PLSEQU,OPER_MINEQU,OPER_MULEQU,OPER_DIVEQU,OPER_EQUEQU,OPER_NOTEQU,OPER_GRTEQU,OPER_LOWEQU,OPER_GRT,OPER_LOW,OPER_PERC,OPER_XOR,OPER_AND,OPER_OR,OPER_ANDEQU,OPER_OREQU,OPER_XOREQU,OPER_PERCEQU};
-enum {SCRIPT_LOGLEVEL=1,SCRIPT_TELEPERIOD,SCRIPT_EVENT_HANDLED,SML_JSON_ENABLE};
+enum {SCRIPT_LOGLEVEL=1,SCRIPT_TELEPERIOD,SCRIPT_EVENT_HANDLED,SML_JSON_ENABLE,SCRIPT_EPOFFS};
 
 
 #ifdef USE_UFILESYS
@@ -219,6 +225,7 @@ extern FS *ufsp;
 
 #endif // USE_UFILESYS
 
+extern "C" void homekit_main(char *, uint32_t);
 
 #ifdef SUPPORT_MQTT_EVENT
   #include <LinkedList.h>                 // Import LinkedList library
@@ -241,7 +248,7 @@ extern VButton *buttons[MAX_TOUCH_BUTTONS];
 #endif
 
 typedef union {
-#ifdef USE_SCRIPT_GLOBVARS
+#if defined(USE_SCRIPT_GLOBVARS) || defined(USE_HOMEKIT)
   uint16_t data;
 #else
   uint8_t data;
@@ -257,6 +264,9 @@ typedef union {
     uint8_t constant : 1;
 #ifdef USE_SCRIPT_GLOBVARS
     uint8_t global : 1;
+#endif
+#ifdef USE_SCRIPT_GLOBVARS
+    uint8_t hchanged : 1;
 #endif
   };
 } SCRIPT_TYPE;
@@ -413,6 +423,11 @@ struct SCRIPT_MEM {
 #ifdef USE_BUTTON_EVENT
     int8_t script_button[MAX_KEYS];
 #endif //USE_BUTTON_EVENT
+
+#ifdef USE_HOMEKIT
+    bool homekit_running = false;
+#endif // USE_HOMEKIT
+    uint32_t epoch_offset = EPOCH_OFFSET;
 } glob_script_mem;
 
 
@@ -476,12 +491,32 @@ void ScriptEverySecond(void) {
       }
     }
     Run_Scripter(">S", 2, 0);
+
+#ifdef USE_HOMEKIT
+    if (glob_script_mem.homekit_running == false) {
+      uint8_t homekit_found = Run_Scripter(">h", -2, 0);
+      if (homekit_found == 99) {
+        if (!TasmotaGlobal.global_state.wifi_down) {
+          homekit_main(glob_script_mem.section_ptr, 0);
+          glob_script_mem.homekit_running = true;
+        }
+      }
+    }
+#endif // USE_HOMEKIT
+
   }
 }
 
-void RulesTeleperiod(void) {
-  if (bitRead(Settings.rule_enabled, 0) && TasmotaGlobal.mqtt_data[0]) Run_Scripter(">T", 2, TasmotaGlobal.mqtt_data);
+void SetChanged(uint32_t index) {
+  glob_script_mem.type[index].bits.changed = 1;
+#ifdef USE_SCRIPT_GLOBVARS
+#ifdef USE_HOMEKIT
+  glob_script_mem.type[index].bits.hchanged = 1;
+#endif
+#endif
+//AddLog(LOG_LEVEL_INFO, PSTR("Change: %d"), index);
 }
+
 
 #define SCRIPT_SKIP_SPACES while (*lp==' ' || *lp=='\t') lp++;
 #define SCRIPT_SKIP_EOL while (*lp==SCRIPT_EOL) lp++;
@@ -741,7 +776,7 @@ char *script;
 
     script_mem_size += 16;
     uint8_t *script_mem;
-    script_mem = (uint8_t*)calloc(script_mem_size, 1);
+    script_mem = (uint8_t*)special_malloc(script_mem_size);
     if (!script_mem) {
       if (imemptr) free(imemptr);
       return -4;
@@ -994,7 +1029,7 @@ void Script_PollUdp(void) {
           if (res) {
             // mark changed
             glob_script_mem.last_udp_ip = glob_script_mem.Script_PortUdp.remoteIP();
-            glob_script_mem.type[index].bits.changed = 1;
+            SetChanged(index);
             if (glob_script_mem.glob_script == 99) {
               Run_Scripter(">G", 2, 0);
             }
@@ -1310,7 +1345,7 @@ uint8_t pt_pin;
 
 #define MPT_DEBOUNCE 10
 
-void ICACHE_RAM_ATTR MP_Timer(void) {
+void IRAM_ATTR MP_Timer(void) {
   uint32_t level = digitalRead(pt_pin&0x3f);
   uint32_t ms = millis();
   uint32_t time;
@@ -1380,38 +1415,42 @@ uint32_t match_vars(char *dvnam, float **fp, char **sp, uint32_t *ind) {
 }
 #endif //USE_SCRIPT_GLOBVARS
 
+#ifndef SCRIPT_IS_STRING_MAXSIZE
+#define SCRIPT_IS_STRING_MAXSIZE 256
+#endif
+
 char *isargs(char *lp, uint32_t isind) {
   float fvar;
   lp = GetNumericArgument(lp, OPER_EQU, &fvar, 0);
   SCRIPT_SKIP_SPACES
-  if (*lp!='"') {
+  if (*lp != '"') {
     return lp;
   }
   lp++;
 
-  if (glob_script_mem.si_num[isind]>0 && glob_script_mem.last_index_string[isind]) {
+  if (glob_script_mem.si_num[isind] > 0 && glob_script_mem.last_index_string[isind]) {
     free(glob_script_mem.last_index_string[isind]);
   }
   char *sstart = lp;
   uint8_t slen = 0;
-  for (uint32_t cnt = 0; cnt<256; cnt++) {
-    if (*lp=='\n' || *lp=='"' || *lp==0) {
+  for (uint32_t cnt = 0; cnt < SCRIPT_IS_STRING_MAXSIZE; cnt++) {
+    if (*lp == '\n' || *lp == '"' || *lp == 0) {
       lp++;
-      if (cnt>0 && !slen) {
+      if (cnt > 0 && !slen) {
         slen++;
       }
       glob_script_mem.siro_num[isind] = slen;
       break;
     }
-    if (*lp=='|') {
+    if (*lp == '|') {
       slen++;
     }
     lp++;
   }
 
   glob_script_mem.si_num[isind] = fvar;
-  if (glob_script_mem.si_num[isind]>0) {
-    if (glob_script_mem.si_num[isind]>MAX_SARRAY_NUM) {
+  if (glob_script_mem.si_num[isind] > 0) {
+    if (glob_script_mem.si_num[isind] > MAX_SARRAY_NUM) {
       glob_script_mem.si_num[isind] = MAX_SARRAY_NUM;
     }
 
@@ -1435,17 +1474,17 @@ float fvar;
   char str[SCRIPT_MAXSSIZE];
   str[0] = 0;
   uint8_t index = fvar;
-  if (index<1) index = 1;
+  if (index < 1) index = 1;
   index--;
   if (gv) gv->strind = index;
   glob_script_mem.sind_num = isind;
   if (glob_script_mem.last_index_string[isind]) {
     if (!glob_script_mem.si_num[isind]) {
-      if (index<=glob_script_mem.siro_num[isind]) {
+      if (index <= glob_script_mem.siro_num[isind]) {
         GetTextIndexed(str, sizeof(str), index , glob_script_mem.last_index_string[isind]);
       }
     } else {
-      if (index>glob_script_mem.si_num[isind]) {
+      if (index > glob_script_mem.si_num[isind]) {
         index = glob_script_mem.si_num[isind];
       }
       strlcpy(str,glob_script_mem.last_index_string[isind] + (index * glob_script_mem.max_ssize), glob_script_mem.max_ssize);
@@ -1680,7 +1719,7 @@ char *isvar(char *lp, uint8_t *vtype, struct T_INDEX *tind, float *fp, char *sp,
             } else {
               if (fp) {
                 if (!strncmp(vn.c_str(), "Epoch", 5)) {
-                  *fp = atoi(str_value) - (uint32_t)EPOCH_OFFSET;
+                  *fp = atoi(str_value) - (uint32_t)glob_script_mem.epoch_offset;
                 } else {
                   *fp = CharToFloat((char*)str_value);
                 }
@@ -1806,7 +1845,7 @@ chknext:
           while (*lp==' ') lp++;
           float fvar1;
           lp = GetNumericArgument(lp, OPER_EQU, &fvar1, gv);
-          fvar = core2_setaxppin(fvar, fvar1);
+          fvar = Core2SetAxpPin(fvar, fvar1);
           lp++;
           len=0;
           goto exit;
@@ -1833,6 +1872,15 @@ chknext:
         }
 #endif //USE_SCRIPT_TASK
 #endif //ESP32
+#ifdef USE_ANGLE_FUNC
+        if (!strncmp(vname, "cos(", 4)) {
+          lp = GetNumericArgument(lp + 4, OPER_EQU, &fvar, gv);
+          fvar = cosf(fvar);
+          lp++;
+          len = 0;
+          goto exit;
+        }
+#endif
         break;
       case 'd':
         if (!strncmp(vname, "day", 3)) {
@@ -1846,8 +1894,13 @@ chknext:
         break;
       case 'e':
         if (!strncmp(vname, "epoch", 5)) {
-          fvar = UtcTime() - (uint32_t)EPOCH_OFFSET;
+          fvar = UtcTime() - (uint32_t)glob_script_mem.epoch_offset;
           goto exit;
+        }
+        if (!strncmp(vname, "epoffs", 6)) {
+          fvar = (uint32_t)glob_script_mem.epoch_offset;
+          tind->index = SCRIPT_EPOFFS;
+          goto exit_settable;
         }
         if (!strncmp(vname, "eres", 4)) {
           fvar = glob_script_mem.event_handeled;
@@ -2135,8 +2188,9 @@ chknext:
           if (ef) {
             uint16_t fsiz = ef.size();
             if (fsiz<2048) {
-              char *script = (char*)calloc(fsiz + 16, 1);
+              char *script = (char*)special_malloc(fsiz + 16);
               if (script) {
+                memset(script, 0, fsiz + 16);
                 ef.read((uint8_t*)script,fsiz);
                 execute_script(script);
                 free(script);
@@ -2153,6 +2207,22 @@ chknext:
           char str[glob_script_mem.max_ssize + 1];
           lp = GetStringArgument(lp + 4, OPER_EQU, str, 0);
           fvar = ufsp->mkdir(str);
+          lp++;
+          len = 0;
+          goto exit;
+        }
+        if (!strncmp(vname, "fmt(", 4)) {
+          lp = GetNumericArgument(lp + 4, OPER_EQU, &fvar, gv);
+          if (!fvar) {
+#ifdef ESP8266
+            LittleFS.format();
+#endif
+#ifdef ESP32
+            LITTLEFS.format();
+#endif
+          } else {
+            //SD.format();
+          }
           lp++;
           len = 0;
           goto exit;
@@ -2469,6 +2539,24 @@ chknext:
           goto exit;
         }
 #endif //USE_LIGHT
+
+#ifdef USE_HOMEKIT
+        if (!strncmp(vname, "hki(", 4)) {
+          if (!TasmotaGlobal.global_state.wifi_down) {
+            // erase nvs
+            lp = GetNumericArgument(lp + 4, OPER_EQU, &fvar, gv);
+
+            homekit_main(0, fvar);
+            if (fvar >= 98) {
+              glob_script_mem.homekit_running == false;
+            }
+
+          }
+          lp++;
+          len = 0;
+          goto exit;
+        }
+#endif
         break;
       case 'i':
         if (!strncmp(vname, "int(", 4)) {
@@ -2533,6 +2621,15 @@ chknext:
           tind->bits.is_string = 0;
           return lp + len;
         }
+#ifdef USE_LVGL
+        if (!strncmp(vname, "lvgl(", 5)) {
+          lp = GetNumericArgument(lp + 5, OPER_EQU, &fvar, gv);
+          fvar = lvgl_test(fvar);
+          lp++;
+          len = 0;
+          goto exit;
+        }
+#endif // USE_LVGL
         break;
       case 'm':
         if (!strncmp(vname, "med(", 4)) {
@@ -2985,6 +3082,14 @@ chknext:
           fvar = sml_json_enable;
           tind->index = SML_JSON_ENABLE;
           goto exit_settable;
+        }
+        if (!strncmp(vname, "smld(", 5)) {
+          lp = GetNumericArgument(lp + 5, OPER_EQU, &fvar, gv);
+          if (fvar < 1) fvar = 1;
+          SML_Decode(fvar - 1);
+          lp++;
+          len = 0;
+          goto exit;
         }
 #endif //USE_SML_M
         break;
@@ -3529,6 +3634,99 @@ char *ForceStringVar(char *lp, char *dstr) {
   return lp;
 }
 
+#ifdef USE_HOMEKIT
+extern "C" {
+  uint32_t Ext_UpdVar(char *vname, float *fvar, uint32_t mode) {
+    return UpdVar(vname, fvar, mode);
+  }
+  void Ext_toLog(char *str) {
+    toLog(str);
+  }
+
+  char *GetFName(void) {
+    return SettingsText(SET_FRIENDLYNAME1);
+  }
+}
+
+int32_t UpdVar(char *vname, float *fvar, uint32_t mode) {
+  uint8_t type;
+  uint8_t index;
+  if (*vname == '@') {
+      vname++;
+      type = *vname;
+      vname++;
+      index = (*vname & 0x0f);
+      if (index < 1) index = 1;
+      if (index > 9) index = 9;
+      switch (type) {
+        case 'p':
+          if (mode) {
+            // set power
+            ExecuteCommandPower(index, *fvar, SRC_BUTTON);
+            return 0;
+          } else {
+            // read power
+            *fvar = bitRead(TasmotaGlobal.power,  index - 1);
+            return 1;
+          }
+          break;
+        case 's':
+          *fvar = SwitchLastState(index - 1);
+          return 1;
+          break;
+        case 'b':
+          *fvar = Button.last_state[index - 1];
+          return 1;
+          break;
+      }
+      return 0;
+  }
+  struct T_INDEX ind;
+  uint8_t vtype;
+  float res = *fvar;
+  isvar(vname, &vtype, &ind, fvar, 0, 0);
+  if (vtype != VAR_NV) {
+    // found variable as result
+    if (vtype == NUM_RES || (vtype & STYPE) == 0) {
+      if (mode) {
+        // set var
+        //AddLog(LOG_LEVEL_DEBUG, PSTR("write from homekit: %s - %d"), vname, (uint32_t)res);
+        index = glob_script_mem.type[ind.index].index;
+        glob_script_mem.fvars[index] = res;
+        glob_script_mem.type[ind.index].bits.changed = 1;
+#ifdef USE_SCRIPT_GLOBVARS
+        if (glob_script_mem.type[ind.index].bits.global) {
+          script_udp_sendvar(vname, &res, 0);
+        }
+#endif //USE_SCRIPT_GLOBVARS
+        return 0;
+      } else {
+        // get var
+        //index = glob_script_mem.type[ind.index].index;
+        int32_t ret = 0;
+#ifdef USE_SCRIPT_GLOBVARS
+        ret = glob_script_mem.type[ind.index].bits.hchanged;
+        glob_script_mem.type[ind.index].bits.hchanged = 0;
+#endif
+        //AddLog(LOG_LEVEL_DEBUG, PSTR("read from homekit: %s - %d - %d"), vname, (uint32_t)*fvar, ret);
+        return ret;
+      }
+    } else {
+      //  break;
+    }
+  }
+  return -1;
+}
+
+
+extern "C" {
+  void Ext_Replace_Cmd_Vars(char *srcbuf, uint32_t srcsize, char *dstbuf, uint32_t dstsize) {
+    Replace_Cmd_Vars(srcbuf, srcsize, dstbuf, dstsize);
+  }
+}
+
+#endif // USE_HOMEKIT
+
 // replace vars in cmd %var%
 void Replace_Cmd_Vars(char *srcbuf, uint32_t srcsize, char *dstbuf, uint32_t dstsize) {
     char *cp;
@@ -3628,7 +3826,6 @@ void toLog(const char *str) {
   if (!str) return;
   AddLog(LOG_LEVEL_INFO, str);
 }
-
 
 void toLogN(const char *cp, uint8_t len) {
   if (!cp) return;
@@ -4501,7 +4698,7 @@ int16_t Run_script_sub(const char *type, int8_t tlen, struct GVARS *gv) {
                               break;
                       }
                       // var was changed
-                      glob_script_mem.type[globvindex].bits.changed = 1;
+                      SetChanged(globvindex);
 #ifdef USE_SCRIPT_GLOBVARS
                       if (glob_script_mem.type[globvindex].bits.global) {
                         script_udp_sendvar(varname, dfvar, 0);
@@ -4527,6 +4724,9 @@ int16_t Run_script_sub(const char *type, int8_t tlen, struct GVARS *gv) {
                             break;
                           case SCRIPT_EVENT_HANDLED:
                             glob_script_mem.event_handeled = *dfvar;
+                            break;
+                          case SCRIPT_EPOFFS:
+                            glob_script_mem.epoch_offset = *dfvar;
                             break;
 #if defined(USE_SML_M) && defined (USE_SML_SCRIPT_CMD)
                           case SML_JSON_ENABLE:
@@ -4556,7 +4756,7 @@ int16_t Run_script_sub(const char *type, int8_t tlen, struct GVARS *gv) {
 
                     if (!glob_script_mem.var_not_found) {
                       // var was changed
-                      glob_script_mem.type[globvindex].bits.changed = 1;
+                      SetChanged(globvindex);
 #ifdef USE_SCRIPT_GLOBVARS
                       if (glob_script_mem.type[globvindex].bits.global) {
                         script_udp_sendvar(varname, 0, str);
@@ -4684,15 +4884,15 @@ int16_t Run_script_sub(const char *type, int8_t tlen, struct GVARS *gv) {
     return -1;
 }
 
-uint8_t script_xsns_index = 0;
 
 void ScripterEvery100ms(void) {
+  static uint8_t xsns_index = 0;
 
   if (bitRead(Settings.rule_enabled, 0) && (TasmotaGlobal.uptime > 4)) {
     ResponseClear();
     uint16_t script_tele_period_save = TasmotaGlobal.tele_period;
     TasmotaGlobal.tele_period = 2;
-    XsnsNextCall(FUNC_JSON_APPEND, script_xsns_index);
+    XsnsNextCall(FUNC_JSON_APPEND, xsns_index);
     TasmotaGlobal.tele_period = script_tele_period_save;
     if (strlen(TasmotaGlobal.mqtt_data)) {
       TasmotaGlobal.mqtt_data[0] = '{';
@@ -5008,7 +5208,7 @@ void HandleScriptTextareaConfiguration(void) {
 
   if (Webserver->hasArg("save")) {
     ScriptSaveSettings();
-    HandleConfiguration();
+    HandleManagement();
     return;
   }
 }
@@ -5058,7 +5258,7 @@ void HandleScriptConfiguration(void) {
 #endif //USE_SCRIPT_FATFS
 
     WSContentSend_P(HTTP_SCRIPT_FORM_END);
-    WSContentSpaceButton(BUTTON_CONFIGURATION);
+    WSContentSpaceButton(BUTTON_MANAGEMENT);
     WSContentStop();
 }
 
@@ -5554,7 +5754,7 @@ void Script_Handle_Hue(String *path) {
         glob_script_mem.fvars[hue_script[index].index[0] - 1] = 1;
           response.replace("{re", "true");
       }
-      glob_script_mem.type[hue_script[index].vindex[0]].bits.changed = 1;
+      SetChanged(hue_script[index].vindex[0]);
       resp = true;
     }
 
@@ -5570,7 +5770,7 @@ void Script_Handle_Hue(String *path) {
       response.replace("{cm", "bri");
       response.replace("{re", String(tmp));
       glob_script_mem.fvars[hue_script[index].index[1] - 1] = bri;
-      glob_script_mem.type[hue_script[index].vindex[1]].bits.changed = 1;
+      SetChanged(hue_script[index].vindex[1]);
       resp = true;
     }
 
@@ -5593,9 +5793,9 @@ void Script_Handle_Hue(String *path) {
       response.replace("{cm", "xy");
       response.replace("{re", "[" + x_str + "," + y_str + "]");
       glob_script_mem.fvars[hue_script[index].index[2]-1] = hue;
-      glob_script_mem.type[hue_script[index].vindex[2]].bits.changed = 1;
+      SetChanged(hue_script[index].vindex[2]);
       glob_script_mem.fvars[hue_script[index].index[3]-1] = sat;
-      glob_script_mem.type[hue_script[index].vindex[3]].bits.changed = 1;
+      SetChanged(hue_script[index].vindex[3]);
       resp = true;
     }
 
@@ -5611,7 +5811,7 @@ void Script_Handle_Hue(String *path) {
       response.replace("{cm", "hue");
       response.replace("{re", String(tmp));
       glob_script_mem.fvars[hue_script[index].index[2] - 1] = hue;
-      glob_script_mem.type[hue_script[index].vindex[2]].bits.changed = 1;
+      SetChanged(hue_script[index].vindex[2]);
       resp = true;
     }
 
@@ -5626,7 +5826,7 @@ void Script_Handle_Hue(String *path) {
       response.replace("{cm", "sat");
       response.replace("{re", String(tmp));
       glob_script_mem.fvars[hue_script[index].index[3] - 1] = sat;
-      glob_script_mem.type[hue_script[index].vindex[3]].bits.changed = 1;
+      SetChanged(hue_script[index].vindex[3]);
       resp = true;
     }
 
@@ -5639,7 +5839,7 @@ void Script_Handle_Hue(String *path) {
       response.replace("{cm", "ct");
       response.replace("{re", String(ct));
       glob_script_mem.fvars[hue_script[index].index[4] - 1] = ct;
-      glob_script_mem.type[hue_script[index].vindex[4]].bits.changed = 1;
+      SetChanged(hue_script[index].vindex[4]);
       resp = true;
     }
     response += "]";
@@ -5993,7 +6193,7 @@ bool ScriptMqttData(void)
         char sbuffer[128];
 
         if (!strncmp(lkey.c_str(), "Epoch", 5)) {
-          uint32_t ep = atoi(value.c_str()) - (uint32_t)EPOCH_OFFSET;
+          uint32_t ep = atoi(value.c_str()) - (uint32_t)glob_script_mem.epoch_offset;
           snprintf_P(sbuffer, sizeof(sbuffer), PSTR(">%s=%d\n"), event_item.Event.c_str(), ep);
         } else {
           snprintf_P(sbuffer, sizeof(sbuffer), PSTR(">%s=\"%s\"\n"), event_item.Event.c_str(), value.c_str());
@@ -6138,71 +6338,7 @@ String ScriptUnsubscribe(const char * data, int data_len)
 
 #ifdef USE_SCRIPT_WEB_DISPLAY
 
-#ifdef SCRIPT_FULL_WEBPAGE
-const char HTTP_WEB_FULL_DISPLAY[] PROGMEM =
-  "<p><form action='" "sfd" "' method='get'><button>" "%s" "</button></form></p>";
-
-const char HTTP_SCRIPT_FULLPAGE1[] PROGMEM =
-  "<!DOCTYPE html><html lang=\"" D_HTML_LANGUAGE "\" class=\"\">"
-  "<head>"
-  "<meta charset='utf-8'>"
-  "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\"/>"
-  "<title>%s - %s</title>"
-  "<script>"
-  "var x=null,lt,to,tp,pc='';"            // x=null allow for abortion
-  "function eb(s){"
-    "return document.getElementById(s);"  // Alias to save code space
-  "}"
-  "function qs(s){"                       // Alias to save code space
-    "return document.querySelector(s);"
-  "}"
-  "function wl(f){"                       // Execute multiple window.onload
-    "window.addEventListener('load',f);"
-  "}"
-    "var rfsh=1;"
-    "function la(p){"
-      "var a='';"
-      "if(la.arguments.length==1){"
-        "a=p;"
-        "clearTimeout(lt);"
-      "}"
-      "if(x!=null){x.abort();}"             // Abort if no response within 2 seconds (happens on restart 1)
-      "x=new XMLHttpRequest();"
-      "x.onreadystatechange=function(){"
-        "if(x.readyState==4&&x.status==200){"
-          "var s=x.responseText.replace(/{t}/g,\"<table style='width:100%%'>\").replace(/{s}/g,\"<tr><th>\").replace(/{m}/g,\"</th><td>\").replace(/{e}/g,\"</td></tr>\").replace(/{c}/g,\"%%'><div style='text-align:center;font-weight:\");"
-          "eb('l1').innerHTML=s;"
-        "}"
-      "};"
-      "if (rfsh) {"
-        "x.open('GET','./sfd?m=1'+a,true);"       // ?m related to Webserver->hasArg("m")
-        "x.send();"
-        "lt=setTimeout(la,%d);"               // Settings.web_refresh
-      "}"
-    "}";
-
-const char HTTP_SCRIPT_FULLPAGE2[] PROGMEM =
-    "function seva(par,ivar){"
-      "la('&sv='+ivar+'_'+par);"
-    "}"
-    "function siva(par,ivar){"
-      "rfsh=1;"
-      "la('&sv='+ivar+'_'+par);"
-      "rfsh=0;"
-    "}"
-    "function pr(f){"
-      "if (f) {"
-        "lt=setTimeout(la,%d);"
-        "rfsh=1;"
-      "} else {"
-        "clearTimeout(lt);"
-        "rfsh=0;"
-      "}"
-    "}"
-    "</script>";
-
-
-#ifdef USE_SCRIPT_FATFS
+#ifdef USE_UFILESYS
 
 const char HTTP_SCRIPT_MIMES[] PROGMEM =
   "HTTP/1.1 200 OK\r\n"
@@ -6214,7 +6350,8 @@ void ScriptGetSDCard(void) {
   if (!HttpCheckPriviledgedAccess()) { return; }
 
   String stmp = Webserver->uri();
-  char *cp = strstr_P(stmp.c_str(), PSTR("/sdc/"));
+
+  char *cp = strstr_P(stmp.c_str(), PSTR("/ufs/"));
 //  if (cp) Serial.printf(">>>%s\n",cp);
   if (cp) {
 #ifdef ESP32
@@ -6222,13 +6359,15 @@ void ScriptGetSDCard(void) {
 #else
     cp += 5;
 #endif
-    if (strstr_P(cp, PSTR("scrdmp.bmp"))) {
-      SendFile(cp);
-      return;
-    } else {
-      if (ufsp->exists(cp)) {
+    if (ufsp) {
+      if (strstr_P(cp, PSTR("scrdmp.bmp"))) {
         SendFile(cp);
         return;
+      } else {
+        if (ufsp->exists(cp)) {
+          SendFile(cp);
+          return;
+        }
       }
     }
   }
@@ -6239,33 +6378,36 @@ extern uint8_t *buffer;
 
 void SendFile(char *fname) {
 char buff[512];
-  const char *mime;
+  const char *mime = 0;
   uint8_t sflg = 0;
-  char *jpg = strstr(fname,".jpg");
-  if (jpg) {
-    mime = "image/jpeg";
-  }
+
 
 #ifdef USE_DISPLAY_DUMP
   char *sbmp = strstr_P(fname, PSTR("scrdmp.bmp"));
   if (sbmp) {
-    mime = "image/bmp";
     sflg = 1;
   }
 #endif // USE_DISPLAY_DUMP
 
-  char *bmp = strstr(fname, ".bmp");
+  char *jpg = strstr_P(fname, PSTR(".jpg"));
+  if (jpg) {
+    mime = "image/jpeg";
+  }
+  char *bmp = strstr_P(fname, PSTR(".bmp"));
   if (bmp) {
     mime = "image/bmp";
   }
-  char *html = strstr(fname, ".html");
+  char *html = strstr_P(fname, PSTR(".html"));
   if (html) {
     mime = "text/html";
   }
-  char *txt = strstr(fname, ".txt");
+  char *txt = strstr_P(fname, PSTR(".txt"));
   if (txt) {
     mime = "text/plain";
   }
+
+  if (!mime) return;
+
 
   WSContentSend_P(HTTP_SCRIPT_MIMES, fname, mime);
 
@@ -6276,7 +6418,8 @@ char buff[512];
     #define infoHeaderSize 40
     if (buffer) {
       uint8_t *bp = buffer;
-      uint8_t *lbuf = (uint8_t*)calloc(Settings.display_width + 2, 3);
+      uint8_t *lbuf = (uint8_t*)special_malloc(Settings.display_width * 3 + 2);
+      if (!lbuf) return;
       uint8_t *lbp;
       uint8_t fileHeader[fileHeaderSize];
       createBitmapFileHeader(Settings.display_height , Settings.display_width , fileHeader);
@@ -6322,7 +6465,72 @@ char buff[512];
   }
   Webserver->client().stop();
 }
-#endif // USE_SCRIPT_FATFS
+#endif // USE_UFILESYS
+
+#ifdef SCRIPT_FULL_WEBPAGE
+const char HTTP_WEB_FULL_DISPLAY[] PROGMEM =
+  "<p><form action='" "sfd" "' method='get'><button>" "%s" "</button></form></p>";
+
+const char HTTP_SCRIPT_FULLPAGE1[] PROGMEM =
+  "<!DOCTYPE html><html lang=\"" D_HTML_LANGUAGE "\" class=\"\">"
+  "<head>"
+  "<meta charset='utf-8'>"
+  "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\"/>"
+  "<title>%s - %s</title>"
+  "<script>"
+  "var x=null,lt,to,tp,pc='';"            // x=null allow for abortion
+  "function eb(s){"
+    "return document.getElementById(s);"  // Alias to save code space
+  "}"
+  "function qs(s){"                       // Alias to save code space
+    "return document.querySelector(s);"
+  "}"
+  "function wl(f){"                       // Execute multiple window.onload
+    "window.addEventListener('load',f);"
+  "}"
+    "var rfsh=1;"
+    "function la(p){"
+      "var a='';"
+      "if(la.arguments.length==1){"
+        "a=p;"
+        "clearTimeout(lt);"
+      "}"
+      "if(x!=null){x.abort();}"             // Abort if no response within 2 seconds (happens on restart 1)
+      "x=new XMLHttpRequest();"
+      "x.onreadystatechange=function(){"
+        "if(x.readyState==4&&x.status==200){"
+        //  "var s=x.responseText.replace(/{t}/g,\"<table style='width:100%%'>\").replace(/{s}/g,\"<tr><th>\").replace(/{m}/g,\"</th><td>\").replace(/{e}/g,\"</td></tr>\").replace(/{c}/g,\"%%'><div style='text-align:center;font-weight:\");"
+          "var s=x.responseText.replace(/{t}/g,\"<table style='width:100%%'>\").replace(/{s}/g,\"<tr><th>\").replace(/{m}/g,\"</th><td>\").replace(/{e}/g,\"</td></tr>\");"
+          "eb('l1').innerHTML=s;"
+        "}"
+      "};"
+      "if (rfsh) {"
+        "x.open('GET','./sfd?m=1'+a,true);"       // ?m related to Webserver->hasArg("m")
+        "x.send();"
+        "lt=setTimeout(la,%d);"               // Settings.web_refresh
+      "}"
+    "}";
+
+const char HTTP_SCRIPT_FULLPAGE2[] PROGMEM =
+    "function seva(par,ivar){"
+      "la('&sv='+ivar+'_'+par);"
+    "}"
+    "function siva(par,ivar){"
+      "rfsh=1;"
+      "la('&sv='+ivar+'_'+par);"
+      "rfsh=0;"
+    "}"
+    "function pr(f){"
+      "if (f) {"
+        "lt=setTimeout(la,%d);"
+        "rfsh=1;"
+      "} else {"
+        "clearTimeout(lt);"
+        "rfsh=0;"
+      "}"
+    "}"
+    "</script>";
+
 
 void ScriptFullWebpage(void) {
   uint32_t fullpage_refresh=10000;
@@ -7392,7 +7600,6 @@ int32_t http_req(char *host, char *request) {
 #include <WiFiClientSecure.h>
 #endif //ESP8266
 
-
 // get tesla powerwall info page json string
 uint32_t call2https(const char *host, const char *path) {
   if (TasmotaGlobal.global_state.wifi_down) return 1;
@@ -7506,6 +7713,187 @@ void cpy2lf(char *dst, uint32_t dstlen, char *src) {
   }
 }
 
+#ifdef USE_LVGL
+#include <renderer.h>
+#include "lvgl.h"
+
+
+const char ili9342[] PROGMEM =
+":H,ILI9342,320,240,16,SPI,1,*,*,*,*,*,*,*,40\n"
+":S,2,1,3,0,100,100\n"
+":I\n"
+"EF,3,03,80,02\n"
+"CF,3,00,C1,30\n"
+"ED,4,64,03,12,81\n"
+"E8,3,85,00,78\n"
+"CB,5,39,2C,00,34,02\n"
+"F7,1,20\n"
+"EA,2,00,00\n"
+"C0,1,23\n"
+"C1,1,10\n"
+"C5,2,3e,28\n"
+"C7,1,86\n"
+"36,1,48\n"
+"37,1,00\n"
+"3A,1,55\n"
+"B1,2,00,18\n"
+"B6,3,08,82,27\n"
+"F2,1,00\n"
+"26,1,01\n"
+"E0,0F,0F,31,2B,0C,0E,08,4E,F1,37,07,10,03,0E,09,00\n"
+"E1,0F,00,0E,14,03,11,07,31,C1,48,08,0F,0C,31,36,0F\n"
+"21,80\n"
+"11,80\n"
+"29,80\n"
+":o,28\n"
+":O,29\n"
+":A,2A,2B,2C,16\n"
+":R,36\n"
+":0,08,00,00,00\n"
+":1,A8,00,00,01\n"
+":2,C8,00,00,02\n"
+":3,68,00,00,03\n"
+":i,21,20\n"
+":TI2,38,22,21\n"
+"#\n";
+
+void start_lvgl(const char * uconfig);
+
+void btn_event_cb(lv_obj_t * btn, lv_event_t event);
+void btn_event_cb(lv_obj_t * btn, lv_event_t event) {
+    if (event == LV_EVENT_CLICKED) {
+      AddLog_P(LOG_LEVEL_INFO,PSTR(">>> clicked"));
+    }
+}
+
+
+int32_t lvgl_test(int32_t p) {
+
+  start_lvgl(ili9342);
+
+  lv_obj_clean(lv_scr_act());
+
+  if (p == 0) {
+    lv_obj_t *label1 =  lv_label_create(lv_scr_act(), NULL);
+    /*Modify the Label's text*/
+    lv_label_set_text(label1, "Hello world!");
+    /* Align the Label to the center
+     * NULL means align on parent (which is the screen now)
+     * 0, 0 at the end means an x, y offset after alignment*/
+     lv_obj_align(label1, NULL, LV_ALIGN_CENTER, 0, 0);
+     /*Add a button*/
+     lv_obj_t *btn1 = lv_btn_create(lv_scr_act(), NULL);           /*Add to the active screen*/
+     lv_obj_set_pos(btn1, 2, 2);                                    /*Adjust the position*/
+     lv_obj_set_size(btn1, 96, 30);                                 /* set size of button */
+     lv_obj_set_event_cb(btn1, btn_event_cb);
+     /*Add text*/
+     lv_obj_t *label = lv_label_create(btn1, NULL);                  /*Put on 'btn1'*/
+     lv_label_set_text(label, "Click");
+  } else {
+    lvgl_setup();
+  }
+  return 0;
+}
+
+lv_obj_t          *tabview,        // LittlevGL tabview object
+                  *gauge,          // Gauge object (on first of three tabs)
+                  *chart,          // Chart object (second tab)
+                  *canvas;         // Canvas object (third tab)
+uint8_t            active_tab = 0, // Index of currently-active tab (0-2)
+                   prev_tab   = 0; // Index of previously-active tab
+lv_chart_series_t *series;         // 'Series' data for the bar chart
+lv_draw_line_dsc_t draw_dsc; // Drawing style (for canvas) is similarly global
+
+#define CANVAS_WIDTH  200 // Dimensions in pixels
+#define CANVAS_HEIGHT 150
+
+void lvgl_setup(void) {
+  // Create a tabview object, by default this covers the full display.
+  tabview = lv_tabview_create(lv_disp_get_scr_act(NULL), NULL);
+  // The CLUE display has a lot of pixels and can't refresh very fast.
+  // To show off the tabview animation, let's slow it down to 1 second.
+  lv_tabview_set_anim_time(tabview, 1000);
+
+  // Because they're referenced any time an object is drawn, styles need
+  // to be permanent in scope; either declared globally (outside all
+  // functions), or static. The styles used on tabs are never modified after
+  // they're used here, so let's use static on those...
+  static lv_style_t tab_style, tab_background_style, indicator_style;
+
+  // This is the background style "behind" the tabs. This is what shows
+  // through for "off" (inactive) tabs -- a vertical green gradient,
+  // minimal padding around edges (zero at bottom).
+  lv_style_init(&tab_background_style);
+  lv_style_set_bg_color(&tab_background_style, LV_STATE_DEFAULT, lv_color_hex(0x408040));
+  lv_style_set_bg_grad_color(&tab_background_style, LV_STATE_DEFAULT, lv_color_hex(0x304030));
+  lv_style_set_bg_grad_dir(&tab_background_style, LV_STATE_DEFAULT, LV_GRAD_DIR_VER);
+  lv_style_set_pad_top(&tab_background_style, LV_STATE_DEFAULT, 2);
+  lv_style_set_pad_left(&tab_background_style, LV_STATE_DEFAULT, 2);
+  lv_style_set_pad_right(&tab_background_style, LV_STATE_DEFAULT, 2);
+  lv_style_set_pad_bottom(&tab_background_style, LV_STATE_DEFAULT, 0);
+  lv_obj_add_style(tabview, LV_TABVIEW_PART_TAB_BG, &tab_background_style);
+
+  // Style for tabs. Active tab is white with opaque background, inactive
+  // tabs are transparent so the background shows through (only the white
+  // text is seen). A little top & bottom padding reduces scrunchyness.
+  lv_style_init(&tab_style);
+  lv_style_set_pad_top(&tab_style, LV_STATE_DEFAULT, 3);
+  lv_style_set_pad_bottom(&tab_style, LV_STATE_DEFAULT, 10);
+  lv_style_set_bg_color(&tab_style, LV_STATE_CHECKED, LV_COLOR_WHITE);
+  lv_style_set_bg_opa(&tab_style, LV_STATE_CHECKED, LV_OPA_100);
+  lv_style_set_text_color(&tab_style, LV_STATE_CHECKED, LV_COLOR_GRAY);
+  lv_style_set_bg_opa(&tab_style, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+  lv_style_set_text_color(&tab_style, LV_STATE_DEFAULT, LV_COLOR_WHITE);
+  lv_obj_add_style(tabview, LV_TABVIEW_PART_TAB_BTN, &tab_style);
+
+  // Style for the small indicator bar that appears below the active tab.
+  lv_style_init(&indicator_style);
+  lv_style_set_bg_color(&indicator_style, LV_STATE_DEFAULT, LV_COLOR_RED);
+  lv_style_set_size(&indicator_style, LV_STATE_DEFAULT, 5);
+  lv_obj_add_style(tabview, LV_TABVIEW_PART_INDIC, &indicator_style);
+
+  // Back to creating widgets...
+
+  // Add three tabs to the tabview
+  lv_obj_t *tab1 = lv_tabview_add_tab(tabview, "Gauge");
+  lv_obj_t *tab2 = lv_tabview_add_tab(tabview, "Chart");
+  lv_obj_t *tab3 = lv_tabview_add_tab(tabview, "Canvas");
+
+  // And then add stuff in each tab...
+
+  // The first tab holds a gauge. To keep the demo simple, let's just use
+  // the default style and range (0-100). See LittlevGL docs for options.
+  gauge = lv_gauge_create(tab1, NULL);
+  lv_obj_set_size(gauge, 186, 186);
+  lv_obj_align(gauge, NULL, LV_ALIGN_CENTER, 0, 0);
+
+  // Second tab, make a chart...
+  chart = lv_chart_create(tab2, NULL);
+  lv_obj_set_size(chart, 200, 180);
+  lv_obj_align(chart, NULL, LV_ALIGN_CENTER, 0, 0);
+  lv_chart_set_type(chart, LV_CHART_TYPE_COLUMN);
+  // For simplicity, we'll stick with the chart's default 10 data points:
+  series = lv_chart_add_series(chart, LV_COLOR_RED);
+  lv_chart_init_points(chart, series, 0);
+  // Make each column shift left as new values enter on right:
+  lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
+
+  // Third tab is a canvas, which we'll fill with random colored lines.
+  // LittlevGL draw functions only work on TRUE_COLOR canvas.
+/*  canvas = lv_canvas_create(tab3, NULL);
+  lv_canvas_set_buffer(canvas, canvas_buffer,
+    CANVAS_WIDTH, CANVAS_HEIGHT, LV_IMG_CF_TRUE_COLOR);
+  lv_obj_align(canvas, NULL, LV_ALIGN_CENTER, 0, 0);
+  lv_canvas_fill_bg(canvas, LV_COLOR_WHITE, LV_OPA_100);
+
+  // Set up canvas line-drawing style based on defaults.
+  // Later we'll change color settings when drawing each line.
+  lv_draw_line_dsc_init(&draw_dsc);
+  */
+}
+
+
+#endif // USE_LVGL
 
 /*********************************************************************************************\
  * Interface
@@ -7537,8 +7925,9 @@ bool Xdrv10(uint8_t function)
         // we have a file system
         AddLog(LOG_LEVEL_INFO,PSTR("UFILESYSTEM OK!"));
         char *script;
-        script = (char*)calloc(UFSYS_SIZE + 4, 1);
+        script = (char*)special_malloc(UFSYS_SIZE + 4);
         if (!script) break;
+        memset(script, 0, UFSYS_SIZE);
         glob_script_mem.script_ram = script;
         glob_script_mem.script_size = UFSYS_SIZE;
         if (ufsp->exists(FAT_SCRIPT_NAME)) {
@@ -7669,6 +8058,12 @@ bool Xdrv10(uint8_t function)
     case FUNC_EVERY_100_MSECOND:
       ScripterEvery100ms();
       break;
+#ifdef USE_LVGL
+    case FUNC_EVERY_50_MSECOND:
+      lv_task_handler();
+      break;
+#endif // USE_LVGL
+
     case FUNC_EVERY_SECOND:
       ScriptEverySecond();
       break;
@@ -7691,9 +8086,20 @@ bool Xdrv10(uint8_t function)
         result = glob_script_mem.event_handeled;
       }
       break;
+    case FUNC_TELEPERIOD_RULES_PROCESS:
+      if (bitRead(Settings.rule_enabled, 0)) {
+        if (TasmotaGlobal.mqtt_data[0]) {
+          Run_Scripter(">T", 2, TasmotaGlobal.mqtt_data);
+        }
+      }
+      break;
 #ifdef USE_WEBSERVER
-    case FUNC_WEB_ADD_BUTTON:
-      WSContentSend_P(HTTP_BTN_MENU_RULES);
+    case FUNC_WEB_ADD_CONSOLE_BUTTON:
+      if (XdrvMailbox.index) {
+        XdrvMailbox.index++;
+      } else {
+        WSContentSend_P(HTTP_BTN_MENU_RULES);
+      }
       break;
 #ifdef USE_SCRIPT_WEB_DISPLAY
     case FUNC_WEB_ADD_MAIN_BUTTON:
@@ -7708,6 +8114,10 @@ bool Xdrv10(uint8_t function)
             Webserver->on("/sfd", ScriptFullWebpage);
         }
 #endif // SCRIPT_FULL_WEBPAGE
+
+#ifdef USE_UFILESYS
+        Webserver->onNotFound(ScriptGetSDCard);
+#endif // USE_UFILESYS
       }
       break;
 #endif // USE_SCRIPT_WEB_DISPLAY
@@ -7716,8 +8126,9 @@ bool Xdrv10(uint8_t function)
       Webserver->on("/ta",HTTP_POST, HandleScriptTextareaConfiguration);
       Webserver->on("/exs", HTTP_POST,[]() { Webserver->sendHeader("Location","/exs");Webserver->send(303);}, script_upload_start);
       Webserver->on("/exs", HTTP_GET, ScriptExecuteUploadSuccess);
-      break;
 #endif // USE_WEBSERVER
+      break;
+
     case FUNC_SAVE_BEFORE_RESTART:
       if (bitRead(Settings.rule_enabled, 0)) {
         Run_Scripter(">R", 2, 0);
@@ -7770,7 +8181,6 @@ bool Xdrv10(uint8_t function)
   }
   return result;
 }
-
 
 #endif  // Do not USE_RULES
 #endif  // USE_SCRIPT

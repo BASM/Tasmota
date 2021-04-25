@@ -23,9 +23,10 @@
 
 #define XDSP_04                4
 
+enum IliModes { ILIMODE_9341 = 1, ILIMODE_9342, ILIMODE_MAX };
+
 #include <ILI9341_2.h>
 
-extern uint8_t *buffer;
 extern uint8_t color_type;
 ILI9341_2 *ili9341_2;
 
@@ -37,13 +38,10 @@ uint8_t ili9342_ctouch_counter = 0;
 uint8_t ili9342_ctouch_counter = 0;
 #endif // USE_FT5206
 
-
 bool tft_init_done = false;
 
-#define ILI9341_ID 1
-#define ILI9342_ID 2
 
-//Settings.display_options.ilimode = ILI9341_ID;
+//Settings.display_options.type = ILIMODE_9341;
 
 /*********************************************************************************************/
 
@@ -63,11 +61,8 @@ void ILI9341_InitDriver()
       Settings.display_height = ILI9341_TFTHEIGHT;
     }
 
-    // disable screen buffer
-    buffer = NULL;
-
-    if (!Settings.display_options.ilimode) {
-      Settings.display_options.ilimode = ILI9341_ID;
+    if (!Settings.display_options.type || (Settings.display_options.type >= ILIMODE_MAX)) {
+      Settings.display_options.type = ILIMODE_9341;
     }
 
     // default colors
@@ -78,11 +73,11 @@ void ILI9341_InitDriver()
     if (TasmotaGlobal.soft_spi_enabled) {
       // Init renderer, may use hardware spi, however we use SSPI defintion because SD card uses SPI definition  (2 spi busses)
       if (PinUsed(GPIO_SSPI_MOSI) && PinUsed(GPIO_SSPI_MISO) && PinUsed(GPIO_SSPI_SCLK)) {
-        ili9341_2 = new ILI9341_2(Pin(GPIO_ILI9341_CS), Pin(GPIO_SSPI_MOSI), Pin(GPIO_SSPI_MISO), Pin(GPIO_SSPI_SCLK), Pin(GPIO_OLED_RESET), Pin(GPIO_ILI9341_DC), Pin(GPIO_BACKLIGHT), 2, Settings.display_options.ilimode & 3);
+        ili9341_2 = new ILI9341_2(Pin(GPIO_ILI9341_CS), Pin(GPIO_SSPI_MOSI), Pin(GPIO_SSPI_MISO), Pin(GPIO_SSPI_SCLK), Pin(GPIO_OLED_RESET), Pin(GPIO_ILI9341_DC), Pin(GPIO_BACKLIGHT), 2, Settings.display_options.type & 3);
       }
     } else if (TasmotaGlobal.spi_enabled) {
       if (PinUsed(GPIO_ILI9341_DC)) {
-        ili9341_2 = new ILI9341_2(Pin(GPIO_ILI9341_CS), Pin(GPIO_SPI_MOSI), Pin(GPIO_SPI_MISO), Pin(GPIO_SPI_CLK), Pin(GPIO_OLED_RESET), Pin(GPIO_ILI9341_DC), Pin(GPIO_BACKLIGHT), 1, Settings.display_options.ilimode & 3);
+        ili9341_2 = new ILI9341_2(Pin(GPIO_ILI9341_CS), Pin(GPIO_SPI_MOSI), Pin(GPIO_SPI_MISO), Pin(GPIO_SPI_CLK), Pin(GPIO_OLED_RESET), Pin(GPIO_ILI9341_DC), Pin(GPIO_BACKLIGHT), 1, Settings.display_options.type & 3);
       }
     }
 
@@ -102,7 +97,7 @@ void ILI9341_InitDriver()
     renderer->setTextFont(2);
     renderer->setTextSize(1);
     renderer->setTextColor(ILI9341_WHITE, ILI9341_BLACK);
-    renderer->DrawStringAt(50, (Settings.display_height/2)-12, (Settings.display_options.ilimode & 3)==ILI9341_ID?"ILI9341 TFT!":"ILI9342 TFT!", ILI9341_WHITE, 0);
+    renderer->DrawStringAt(50, (Settings.display_height/2)-12, (Settings.display_options.type & 3)==ILIMODE_9341?"ILI9341 TFT!":"ILI9342 TFT!", ILI9341_WHITE, 0);
     delay(1000);
 #endif // SHOW_SPLASH
 
@@ -123,12 +118,12 @@ void ILI9341_InitDriver()
     #undef SCL_2
     #define SCL_2 22
     Wire1.begin(SDA_2, SCL_2, 400000);
-    Touch_Init(Wire1);
+    FT5206_Touch_Init(Wire1);
 #endif // USE_FT5206
 #endif // ESP32
 
 #ifdef USE_XPT2046
-	  Touch_Init(Pin(GPIO_XPT2046_CS));
+	  XPT2046_Touch_Init(Pin(GPIO_XPT2046_CS));
 #endif
 
     tft_init_done = true;
@@ -137,26 +132,26 @@ void ILI9341_InitDriver()
 }
 
 
-void core2_disp_pwr(uint8_t on);
-void core2_disp_dim(uint8_t dim);
+void Core2DisplayPower(uint8_t on);
+void Core2DisplayDim(uint8_t dim);
 
 void ili9342_bpwr(uint8_t on) {
 #ifdef USE_M5STACK_CORE2
-  core2_disp_pwr(on);
+  Core2DisplayPower(on);
 #endif
 }
 
 void ili9342_dimm(uint8_t dim) {
 #ifdef USE_M5STACK_CORE2
-  core2_disp_dim(dim);
+  Core2DisplayDim(dim);
 #endif
 }
 
 #if defined(USE_FT5206) || defined(USE_XPT2046)
 #ifdef USE_TOUCH_BUTTONS
 
-#if defined(USE_FT5206)
-void TS_RotConvert(int16_t *x, int16_t *y) {
+#ifdef USE_FT5206
+void FT5206_TS_RotConvert(int16_t *x, int16_t *y) {
 
 int16_t temp;
   if (renderer) {
@@ -181,8 +176,10 @@ int16_t temp;
     }
   }
 }
-#elif defined(USE_XPT2046)
-void TS_RotConvert(int16_t *x, int16_t *y) {
+#endif // USE_FT5206
+
+#ifdef USE_XPT2046
+void XPT2046_TS_RotConvert(int16_t *x, int16_t *y) {
 
 int16_t temp;
   if (renderer) {
@@ -220,7 +217,16 @@ ili9342_ctouch_counter++;
   if (2 == ili9342_ctouch_counter) {
     // every 100 ms should be enough
     ili9342_ctouch_counter = 0;
-    Touch_Check(TS_RotConvert);
+#ifdef USE_FT5206
+    if (FT5206_found) {
+      Touch_Check(FT5206_TS_RotConvert);
+    }
+#endif // USE_FT5206
+#ifdef USE_XPT2046
+    if (XPT2046_found) {
+      Touch_Check(XPT2046_TS_RotConvert);
+    }
+#endif // USE_XPT2046
   }
 }
 #endif // USE_TOUCH_BUTTONS

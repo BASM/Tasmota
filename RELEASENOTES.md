@@ -58,13 +58,11 @@ Above binaries are also available as gzipped version allowing faster uploads.
 The attached binaries can also be downloaded from http://ota.tasmota.com/tasmota/release. The links can be used for OTA upgrades too like ``OtaUrl http://ota.tasmota.com/tasmota/release/tasmota.bin.gz``
 
 ### ESP32 based
-The following binary downloads have been compiled with ESP32/Arduino library core version **1.0.5**.
+The following binary downloads have been compiled with ESP32/Arduino library core version **1.0.6**.
 
-- **tasmota32.bin** = The Tasmota version with most drivers. **RECOMMENDED RELEASE BINARY**
+- **tasmota32.bin** = The Tasmota version with most drivers including additional sensors and KNX.  **RECOMMENDED RELEASE BINARY**
+- **tasmota32solo1.bin** = The Tasmota version with most drivers including additional sensors and KNX for single core ESP32.
 - **tasmota32-BG.bin** to **tasmota32-TW.bin** = The Tasmota version in different languages.
-- **tasmota32-lite.bin** = The Lite version without most drivers and sensors.
-- **tasmota32-knx.bin** = The Knx version without some features but adds KNX support.
-- **tasmota32-sensors.bin** = The Sensors version adds more useful sensors.
 - **tasmota32-ir.bin** = The InfraRed Receiver and transmitter version allowing all available protocols provided by library IRremoteESP8266 but without most other features.
 - **tasmota32-display.bin** = The Display version without Energy Monitoring but adds display support.
 - **tasmota32-webcam.bin** = The Webcam version adds webcam support.
@@ -78,34 +76,15 @@ The attached binaries can also be downloaded from http://ota.tasmota.com/tasmota
 
 [Complete list](BUILDS.md) of available feature and sensors.
 
-## Changelog v9.3.1.1
+## Changelog v9.4.0.2
 ### Added
-- Command ``Sensor80 1 <0..7>`` to control MFRC522 RFID antenna gain from 18dB (0) to 48dB (7) [#11073](https://github.com/arendst/Tasmota/issues/11073)
-- Support for SML VBUS [#11125](https://github.com/arendst/Tasmota/issues/11125)
-- Support for NEC and OPTOMA LCD/DLP Projector serial power control by Jan Bubík [#11145](https://github.com/arendst/Tasmota/issues/11145)
-- Support for XPT2046 touch screen digitizer on ILI9341 display by nonix [#11159](https://github.com/arendst/Tasmota/issues/11159)
-- Support for zigbee lumi.sensor_wleak [#11200](https://github.com/arendst/Tasmota/issues/11200)
-- Support for CSE7761 energy monitor as used in ESP32 based Sonoff Dual R3 Pow [#10793](https://github.com/arendst/Tasmota/issues/10793)
-- Allow MCP230xx pinmode from output to input [#11104](https://github.com/arendst/Tasmota/issues/11104)
-- Berry improvements [#11163](https://github.com/arendst/Tasmota/issues/11163)
-- Extent compile time SetOptions support [#11204](https://github.com/arendst/Tasmota/issues/11204)
-- ESP32 Extent BLE [#11212](https://github.com/arendst/Tasmota/issues/11212)
+- Initial support for optional ``Template`` JSON fieldpair ``"CMND":"<any template related command>;<any template related command>;..."`` [#11788](https://github.com/arendst/Tasmota/issues/11788)
+
+### Breaking Changed
 
 ### Changed
-- TasmotaSerial library from v3.2.0 to v3.3.0
-- ESP32 core library from v1.0.5-rc6 to v1.0.5
-- TuyaMcu dimmer timeout [#11121](https://github.com/arendst/Tasmota/issues/11121)
-- Rename epaper 42 commands [#11222](https://github.com/arendst/Tasmota/issues/11222)
-- DeepSleep announcement topic [#11223](https://github.com/arendst/Tasmota/issues/11223)
 
 ### Fixed
-- PN532 on ESP32 Serial flush both Tx and Rx buffers [#10910](https://github.com/arendst/Tasmota/issues/10910)
-- Light scheme related color changes [#11041](https://github.com/arendst/Tasmota/issues/11041)
-- Refactor acceleration function for shutter stepper and servo [#11088](https://github.com/arendst/Tasmota/issues/11088)
-- LM75AD detection on different addresses [#11096](https://github.com/arendst/Tasmota/issues/11096)
-- Timer loop when console is scrolled up regression from v9.3.0 [#11108](https://github.com/arendst/Tasmota/issues/11108)
-- Display exception when no file system is present [#11125](https://github.com/arendst/Tasmota/issues/11125)
-- Scripter and SML fixes [#11150](https://github.com/arendst/Tasmota/issues/11150)
-- Zigbee exception when bad frame is received [#11192](https://github.com/arendst/Tasmota/issues/11192)
-- ESP32 flash script for Odroid and Core2 [#11227](https://github.com/arendst/Tasmota/issues/11227)
-- ESP32 WS2812 bitbang support [#11248](https://github.com/arendst/Tasmota/issues/11248)
+
+### Noted
+- ESP32 single core **tasmota32solo1.bin** binary can only be uploaded using the GUI as OTA upload will trigger the watchdog timer
