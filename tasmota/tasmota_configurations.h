@@ -168,6 +168,7 @@
 #define USE_PN532_HSU                            // Add support for PN532 using HSU (Serial) interface (+1k8 code, 140 bytes mem)
 //#define USE_ZIGBEE                               // Enable serial communication with Zigbee CC2530 flashed with ZNP
 #define USE_RDM6300                              // Add support for RDM6300 125kHz RFID Reader (+0k8)
+#define USE_RU5300                                 // Add support for RU5300 UHR Reader
 #define USE_IBEACON                              // Add support for bluetooth LE passive scan of ibeacon devices (uses HM17 module)
 //#define USE_GPS                                  // Add support for GPS and NTP Server for becoming Stratus 1 Time Source (+ 3.1kb flash, +132 bytes RAM)
 #define USE_HM10                                 // (ESP8266 only) Add support for HM-10 as a BLE-bridge for the LYWSD03 (+5k1 code)
