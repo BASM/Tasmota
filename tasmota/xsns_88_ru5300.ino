@@ -158,12 +158,17 @@ static void RU5300SendReadCardTID(uint32_t pass) {
 }
 
 
-// return 1 -- wait more
+// return 2 -- unsupported passwords, send TID without read by password
+//        1 -- wait more
 //        0 -- success read
 //       -1 -- error
-static int RU5300RecvReadCardTID(void) {
+static int RU5300RecvReadCardTID(int save) {
   int     j,i;
   uint8_t crc;
+  union {
+    uint32_t id;
+    uint8_t  bid[4];
+  } id;
   j=RU5300Serial->available();
 
   for (i=0; i<j; i++)
@@ -184,6 +189,18 @@ static int RU5300RecvReadCardTID(void) {
   crc=RU5300Crc(RU5300.recv, i-1);
   if (crc!=RU5300.recv[i-1]) return -1;
 
+
+  id.bid[3]=RU5300.recv[7];
+  id.bid[2]=RU5300.recv[8];
+  id.bid[1]=RU5300.recv[9];
+  id.bid[0]=RU5300.recv[10];
+
+  AddLog(LOG_LEVEL_DEBUG, PSTR("ID: %x (%x %x %x %x)"), id.id,
+      id.bid[3],
+      id.bid[2],
+      id.bid[1],
+      id.bid[0]);
+
   RU5300.b[7]=RU5300.recv[11];
   RU5300.b[6]=RU5300.recv[12];
   RU5300.b[5]=RU5300.recv[13];
@@ -193,6 +210,7 @@ static int RU5300RecvReadCardTID(void) {
   RU5300.b[1]=RU5300.recv[17];
   RU5300.b[0]=RU5300.recv[18];
 
+  if (id.id==0xe2801160) return 2; //Monoza R6 unsupported password
   return 0;
 }
 
@@ -237,7 +255,7 @@ static int RU5300SendUDP(uint32_t key) {
 
     udp.write((char*)&msg,sizeof(udpmsg));
     udp.endPacket();
-    AddLog(LOG_LEVEL_INFO, PSTR("UDP send"));
+    AddLog(LOG_LEVEL_INFO, PSTR("UDP send %s 0x%8x (%i)"),msg.devname,key,key);
   } else {
     AddLog(LOG_LEVEL_INFO, PSTR("CAN'T SEND UDP PACKET"));
   }
@@ -264,26 +282,29 @@ void RU5300ScanForTag() {
     case RU5300_STAGE_RECVSTAG:
 
       //AddLog(LOG_LEVEL_DEBUG, PSTR("RECV"));
-      status = RU5300RecvReadCardTID();
+      status = RU5300RecvReadCardTID(1);
       if (status==1) break;//wait
-      if (status==0) RU5300.stage=RU5300_STAGE_CHKPTAG;
-      else           RU5300.stage=RU5300_STAGE_SCANTAG;//wrong
+      if ((status==0) || (status==2))
+        RU5300.LASTTID=RU5300.TID;
+
+      if (status==2) goto send_tid;
+      if   (status==0) RU5300.stage=RU5300_STAGE_CHKPTAG;
+      else             RU5300.stage=RU5300_STAGE_SCANTAG;//wrong
       break;
     case RU5300_STAGE_CHKPTAG:
       RU5300CalcPass(&pass);
-      AddLog(LOG_LEVEL_DEBUG, PSTR("CHECK pass %x"),pass);
+      AddLog(LOG_LEVEL_INFO, PSTR("CHECK pass %lx for tid: %08lX (%li)"),(unsigned long)pass, (unsigned long)RU5300.TID, (unsigned long)RU5300.TID);
       RU5300SendReadCardTID(pass);
       RU5300.stage=RU5300_STAGE_RECVPTAG;
       break;
     case RU5300_STAGE_RECVPTAG:
       //AddLog(LOG_LEVEL_DEBUG, PSTR("RECV pass"));
-      status = RU5300RecvReadCardTID();
+      status = RU5300RecvReadCardTID(0);
       if (status==1) break;//wait
-      RU5300.stage=RU5300_STAGE_SCANTAG;
       if (status==0) {
-        RU5300.LASTTID=RU5300.TID;
-        AddLog(LOG_LEVEL_INFO, PSTR("TAG FOUND %08X"), RU5300.LASTTID);
-        ResponseTime_P(PSTR(",\"RU5300\":{\"UID\":\"%08X\"}}"), RU5300.LASTTID);
+        send_tid:
+        AddLog(LOG_LEVEL_INFO, PSTR("TAG FOUND %08lX, old tid: %08lx"), (unsigned long)RU5300.LASTTID,(unsigned long)RU5300.TID);
+        ResponseTime_P(PSTR(",\"RU5300\":{\"UID\":\"%08lX\"}}"), (unsigned long) RU5300.LASTTID);
 
         RU5300SendUDP(RU5300.LASTTID);
 
@@ -292,7 +313,10 @@ void RU5300ScanForTag() {
         //udp.endPacket();
 
         //MqttPublishTeleSensor();
+      } else {
+        AddLog(LOG_LEVEL_INFO, PSTR("Read error: %i, wrong password?"),status);
       };
+      RU5300.stage=RU5300_STAGE_SCANTAG;
       break;
   }
 }
