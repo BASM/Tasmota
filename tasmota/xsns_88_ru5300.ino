@@ -51,6 +51,7 @@ struct {
     uint64_t TID;
   };
   uint32_t LASTTID;
+  uint32_t LASTTID_XOR;
 } RU5300;
 
 typedef struct _tid_ {
@@ -284,8 +285,10 @@ void RU5300ScanForTag() {
       //AddLog(LOG_LEVEL_DEBUG, PSTR("RECV"));
       status = RU5300RecvReadCardTID(1);
       if (status==1) break;//wait
-      if ((status==0) || (status==2))
+      if ((status==0) || (status==2)) {
         RU5300.LASTTID=RU5300.TID;
+        RU5300.LASTTID_XOR=RU5300.TID^(RU5300.TID>>32);
+      }
 
       if (status==2) goto send_tid;
       if   (status==0) RU5300.stage=RU5300_STAGE_CHKPTAG;
@@ -306,7 +309,11 @@ void RU5300ScanForTag() {
         AddLog(LOG_LEVEL_INFO, PSTR("TAG FOUND %08lX, old tid: %08lx"), (unsigned long)RU5300.LASTTID,(unsigned long)RU5300.TID);
         ResponseTime_P(PSTR(",\"RU5300\":{\"UID\":\"%08lX\"}}"), (unsigned long) RU5300.LASTTID);
 
-        RU5300SendUDP(RU5300.LASTTID);
+        if (status==2) {
+          RU5300SendUDP(RU5300.LASTTID);
+        } else {
+          RU5300SendUDP(RU5300.LASTTID_XOR);//FOR R6 send XOR lo and hi TID
+        }
 
         //udp.beginPacketMulticast(MULTICAST_IP, MULTICAST_PORT, WiFi.localIP());
         //udp.write("HELLO", 5);
