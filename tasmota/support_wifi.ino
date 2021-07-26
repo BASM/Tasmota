@@ -730,6 +730,8 @@ void WifiPollNtp() {
 }
 
 uint32_t WifiGetNtp(void) {
+
+  return 0;
   static uint8_t ntp_server_id = 0;
 
   IPAddress time_server_ip;
