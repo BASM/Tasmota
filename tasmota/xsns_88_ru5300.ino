@@ -18,20 +18,28 @@
 */
 
 #ifdef USE_RU5300
+#define htobe16(v) __builtin_bswap16(v)
+#define htobe32(v) __builtin_bswap32(v)
+#define htobe64(v) __builtin_bswap64(v)
+
+#define be32toh(v) __builtin_bswap32(v)
+#define be64toh(v) __builtin_bswap64(v)
 /*********************************************************************************************\
  * Read random tag, and check password
  *
 \*********************************************************************************************/
 
 #define XSNS_88            88
-
-//#define RU5300_BAUDRATE   115200
-#define RU5300_BAUDRATE   9600
-#define RU5300_RECVWAIT   10   //cycles-- value * 100 ms
-#define RU5300_ANSSIZE    20
-
 #include <TasmotaSerial.h>
-#include "WiFiClientSecureLightBearSSL.h"   // needs to be before "ESP8266WiFi.h" to avoid conflict with Arduino headers
+#define RECVBUFFSIZE      128
+#define RU5300_BAUDRATE   115200
+
+
+struct {
+  uint8_t  recv_idx;
+  uint8_t  recv[RECVBUFFSIZE];
+} RU5300;
+
 TasmotaSerial *RU5300Serial = nullptr;
 
 enum {
@@ -41,49 +49,74 @@ enum {
   RU5300_STAGE_RECVPTAG
 };
 
+                // 20*50 -- 1 second
+#define TIMEOUTCACHE (20)*3 //5 second
+
+
+#define RU5300CACHELEN 32
+
 struct {
-  uint8_t  stage;
-  uint8_t  recv_try = 0;
-  uint8_t  recv_idx;
-  uint8_t  recv[32];
-  union {
-    uint8_t  b[8];
-    uint64_t TID;
-  };
-  uint32_t LASTTID;
-  uint32_t LASTTID_XOR;
-} RU5300;
+  uint32_t tid;
+  int      to;  //timeout
+} RU5300t32to[RU5300CACHELEN];
 
-typedef struct _tid_ {
-  uint8_t  tclass;
-  uint8_t  manuf_hi;
-  uint8_t  model:4;
-  uint8_t  manuf_lo:4;
-  union {
-    struct {
-      uint8_t  vermin:4;
-      uint8_t  vermaj:4;
-    };
-    uint8_t model_lo;
-  };
-} uhrtaginfo_t;
+void RU5300TimeoutIterate(void) {
+  int i;
 
-#define htobe16(v) __builtin_bswap16(v)
-#define htobe32(v) __builtin_bswap32(v)
-#define htobe64(v) __builtin_bswap64(v)
+  for (i=0;i<RU5300CACHELEN;i++)
+    if (RU5300t32to[i].to>0)
+      RU5300t32to[i].to--;
+}
+
+int RU5300SendByTimeout(uint32_t t32) {
+  int  i;
+  bool found=false;
+  int  line=0;
+
+  for (i=0;i<RU5300CACHELEN;i++) {
+    if (RU5300t32to[i].to==0) line=i;//Search last empty, if no empty return 0
+    if (RU5300t32to[i].tid==t32) {
+      found=1;
+      line=i;
+      break;
+    }
+  }
+
+  if (found)
+    if (RU5300t32to[line].to>0) {
+      AddLog(LOG_LEVEL_INFO, PSTR("Not send, timeout: %i"), RU5300t32to[line].to);
+      return 1;
+    }
+
+  RU5300t32to[line].tid=t32;
+  RU5300t32to[line].to=TIMEOUTCACHE;
+  RU5300SendUDP(t32);
+
+  return 0;
+}
+
+static int RU5300SendConfirm(void) {
+  uint8_t  confirmmsg[]= {0x53, 0x57, 0x00, 0x03, 0xFF, 0x45, 0x0F};
+
+  AddLog(LOG_LEVEL_DEBUG, PSTR("Send confirm"));
+  RU5300Serial->write(confirmmsg, 7);
+  return 0;
+}
+
 
 void RU5300Init() {
+  AddLog(LOG_LEVEL_INFO, PSTR("Init RU5300"));
   if (PinUsed(GPIO_RU5300_RX)) {
-    RU5300Serial = new TasmotaSerial(Pin(GPIO_RU5300_RX), Pin(GPIO_RU5300_TX), 1, 64);
+    RU5300Serial = new TasmotaSerial(Pin(GPIO_RU5300_RX), Pin(GPIO_RU5300_TX), 1, RECVBUFFSIZE);
     if (RU5300Serial->begin(RU5300_BAUDRATE)) {//FIXME 8N1 ??
       if (RU5300Serial->hardwareSerial()) {
         ClaimSerial();
+        RU5300SendConfirm();
       }
     }
   }
-  RU5300.stage=RU5300_STAGE_SCANTAG;
-  RU5300.TID=0x00;
-  RU5300.LASTTID=0x00;
+  memset(RU5300t32to,0,sizeof(RU5300t32to));
+  AddLog(LOG_LEVEL_DEBUG, PSTR("Init success, p: %p"), RU5300Serial);
 }
 
 static uint8_t RU5300Crc(uint8_t *buff, int len) {
@@ -95,149 +128,174 @@ static uint8_t RU5300Crc(uint8_t *buff, int len) {
   return uSum;
 }
 
+// Move recv buffer to right reader
+static void RU5300MoveBuffer(void) {
+  int i,len;
 
-static int RU5300WriteLenAndCRC(void *start, void *pend) {
-  uint16_t len;
-#pragma pack(push,1)
-  typedef struct {
-    uint16_t head;
-    uint16_t len;
-    uint8_t  data[];
-  } msg_t;
-#pragma pack(pop)
-  msg_t *msg=(msg_t*)start;
-  len = (uintptr_t)pend - (uintptr_t)msg->data+1;
-  msg->len=htobe16(len);
-  msg->data[len-1]=RU5300Crc((uint8_t*)start, len+3);
-  return len+4;
+  len=RU5300.recv_idx;
+  if (len==0) return;
+
+  for (i=1; i<len; i++) {
+    if (RU5300.recv[i]==0x43) {
+      if ((i+1)>=len) {
+        if (RU5300.recv[i+1]==0x54)
+          break;
+      } else break;
+    }
+  }
+  len=len-i;
+  if (len>0)
+    memmove(&RU5300.recv[0], &RU5300.recv[i], len);
+  RU5300.recv_idx=len;
+  //hexdump("MOVE RESULT", RU5300.recv, len);
 }
 
-static void *RU5300AddInt8(void *vptr, uint8_t data) {
-  uint8_t *p=(uint8_t*)vptr;
-  p[0]=data;
-  return (void*)&p[1];
+struct RU5300resptype{
+  int      len;
+  int      addr;
+  int      cmd;
+  int      status;
+  uint8_t *data;
+} ;
+
+// Recive Response data block
+// 
+// * respinfo -- response info (set only if returned zero '0')
+// 
+// return 0 - recived valid data block
+//        1 - wait data
+//       -1 - data drop
+//
+static int RU5300Recv(struct RU5300resptype *respinfo) {
+  int     i,j,len;
+  uint8_t crc;
+
+  j=RU5300Serial->available();
+
+  for (i=0; i<j; i++) {
+    RU5300.recv[RU5300.recv_idx++]=RU5300Serial->read();
+    //AddLog(LOG_LEVEL_INFO, PSTR("I:%i, j:%i, recvidx: %i -- %x\n"),i,j, RU5300.recv_idx-1,RU5300.recv[RU5300.recv_idx-1]);
+    if (RU5300.recv_idx>=RECVBUFFSIZE) break;
+  }
+  if (RU5300.recv_idx<7) return 1; //wait data
+
+  // Format: 43 54 LEN ADDR ..... CRC
+  if ((RU5300.recv[0]!=0x43)&&(RU5300.recv[1]!=0x54)) {
+    AddLog(LOG_LEVEL_INFO, PSTR("Check header err\n"));
+    RU5300MoveBuffer();
+    return 1;
+  }
+
+  len=(RU5300.recv[2]<<8)|RU5300.recv[3];
+  //len+=5;
+  if (len>RECVBUFFSIZE) {
+    RU5300MoveBuffer();
+    AddLog(LOG_LEVEL_INFO, PSTR("Check len err, len: %i, buff len: %i"),len,RECVBUFFSIZE);
+    return 1;
+  }
+
+  if ((len+4)>(RU5300.recv_idx)) return 1;
+
+  crc=RU5300Crc(RU5300.recv, len+3);
+  if (crc!=RU5300.recv[len+3]) {
+    RU5300MoveBuffer();
+    AddLog(LOG_LEVEL_INFO, PSTR("Check crc err %x, must %x"), crc, RU5300.recv[len+3]);
+    return -1;
+  }
+  AddLog(LOG_LEVEL_DEBUG, PSTR("SUCCESS"));
+
+  // SUCCESS recive
+  respinfo->len=len;
+  respinfo->addr=RU5300.recv[4];
+  respinfo->cmd=RU5300.recv[5];
+  respinfo->status=RU5300.recv[6];
+  memmove(&RU5300.recv[0],&RU5300.recv[6],len);
+
+  respinfo->data=&RU5300.recv[0];
+
+  return 0;
 }
 
-static void *RU5300AddInt16(void *vptr, uint16_t data) {
-  uint16_t *p=(uint16_t*)vptr;
-  p[0]=htobe16(data);
-  return (void*)&p[1];
-}
-
-static void *RU5300AddInt32(void *vptr, uint32_t data) {
-  uint32_t *p=(uint32_t*)vptr;
-  p[0]=htobe32(data);
-  return (void*)&p[1];
-}
-
-#define CMD_READ_TAG_DATA 0x02
-#define RU5300_MEM_TID    2
-static void RU5300SendReadCardTID(uint32_t pass) {
-  int          status,len;
-  uint8_t      tbuff[256];
-  void        *vmsg=tbuff;
-
-  vmsg=RU5300AddInt16   (vmsg, 0x5357            );  // head
-  vmsg=RU5300AddInt16   (vmsg, 0                 );  // len, fix later
-  vmsg=RU5300AddInt8    (vmsg, 0xff              );  // reader address 0xff broadcast
-  vmsg=RU5300AddInt8    (vmsg, CMD_READ_TAG_DATA );  // cmd
-
-  vmsg=RU5300AddInt8    (vmsg, RU5300_MEM_TID    );  // memory type
-  vmsg=RU5300AddInt8    (vmsg, 0x00              );  // start address
-  vmsg=RU5300AddInt8    (vmsg, 0x06              );  // read len (words)
-  vmsg=RU5300AddInt32   (vmsg, pass);           //password
-
-  len = RU5300WriteLenAndCRC(tbuff, vmsg);
-
-  RU5300Serial->flush();
-  RU5300Serial->write(tbuff, len);
-  AddLog(LOG_LEVEL_DEBUG, PSTR("SEND %i bytes"), len);
-  AddLogBuffer(LOG_LEVEL_DEBUG, (uint8_t*)tbuff, len);
-  //RU5300.block_time=RU5300_RECVWAIT;
-  RU5300.recv_try=30;//RU5300_RECVWAIT;
-  RU5300.recv_idx=0;
-}
+enum {
+ CMD_ACTIVE_DATA=0x45,
+};
 
 
 // return 2 -- unsupported passwords, send TID without read by password
 //        1 -- wait more
 //        0 -- success read
 //       -1 -- error
-static int RU5300RecvReadCardTID(int save) {
-  int     j,i;
-  uint8_t crc;
-  union {
-    uint32_t id;
-    uint8_t  bid[4];
-  } id;
-  j=RU5300Serial->available();
+static int RU5300RecvRead(uint32_t *EP, uint64_t *TID) {
+  int      i,tags;
+  struct RU5300resptype info;
+  uint8_t  devsn[7];
+  uint8_t  tid[64];
+  uint8_t *p;
 
-  for (i=0; i<j; i++)
-    RU5300.recv[RU5300.recv_idx++]=RU5300Serial->read();
-  i=RU5300.recv_idx;
+  if (RU5300Recv(&info)!=0) return 1;
+  if (info.cmd!=CMD_ACTIVE_DATA) return 1;
 
-  if (RU5300.recv_try==0) return -1;
-  else RU5300.recv_try--;
+  AddLogBuffer(LOG_LEVEL_DEBUG, info.data, info.len);
 
-  if (i>0)
-    AddLog(LOG_LEVEL_DEBUG, PSTR("RECV %i, wait %i bytes, try: %i"), i, RU5300_ANSSIZE, RU5300.recv_try);
-  if (i<RU5300_ANSSIZE) return 1;
+  memcpy(devsn, info.data, 7); //Copy serial
+  tags=info.data[8];
+  p=&info.data[9];
 
-  AddLogBuffer(LOG_LEVEL_DEBUG, (uint8_t*)RU5300.recv, RU5300.recv_idx);
+  for (i=0;i<tags;i++) {
+    int tlen=p[0];
+    int t   =p[1]; // type always must be 0x01
+    int ant =p[2];
+    int rssi=p[tlen-1];
+    memcpy(tid, &p[3], tlen-4);
+    //hexdump("TAG ID", tid, tlen-4);
 
-  RU5300Serial->flush();
+    AddLog(LOG_LEVEL_DEBUG, PSTR("TAG: %i LEN: %i, RSSI: %i, ANT: %i"),i, tlen, rssi, ant);
+    // RU5300 read always by one(1) tag on at a time
+    if (i==0) {
+      memcpy(EP ,&tid[0],4);
+      memcpy(TID,&tid[4],8);
+      *EP =be32toh(*EP);
+      *TID=be64toh(*TID);
+      break;
+    }
+    (void)t;
+  }
 
-  crc=RU5300Crc(RU5300.recv, i-1);
-  if (crc!=RU5300.recv[i-1]) return -1;
-
-
-  id.bid[3]=RU5300.recv[7];
-  id.bid[2]=RU5300.recv[8];
-  id.bid[1]=RU5300.recv[9];
-  id.bid[0]=RU5300.recv[10];
-
-  AddLog(LOG_LEVEL_DEBUG, PSTR("ID: %x (%x %x %x %x)"), id.id,
-      id.bid[3],
-      id.bid[2],
-      id.bid[1],
-      id.bid[0]);
-
-  RU5300.b[7]=RU5300.recv[11];
-  RU5300.b[6]=RU5300.recv[12];
-  RU5300.b[5]=RU5300.recv[13];
-  RU5300.b[4]=RU5300.recv[14];
-  RU5300.b[3]=RU5300.recv[15];
-  RU5300.b[2]=RU5300.recv[16];
-  RU5300.b[1]=RU5300.recv[17];
-  RU5300.b[0]=RU5300.recv[18];
-
-  if (id.id==0xe2801160) return 2; //Monoza R6 unsupported password
-  return 0;
-}
-
-static int RU5300CalcPass(uint32_t *acc) {
-  br_sha256_context ctx;
-  uint8_t       buffer[32];
-  uint8_t       result[32];
-  uint64_t      tidbe=htobe64(RU5300.TID);
-  uint64_t      p1=htobe64(RU5300_MASTERPASS_HI);
-  uint64_t      p2=htobe64(RU5300_MASTERPASS_LO);
-
-  memcpy(&buffer[0] , &tidbe  , 8);
-  memcpy(&buffer[8] , &p1     , 8);
-  memcpy(&buffer[16], &p2     , 8);
-  AddLogBuffer(LOG_LEVEL_DEBUG, buffer, 24);
-
-  br_sha256_init  (&ctx);
-  br_sha256_update(&ctx, buffer, 24);
-  br_sha256_out   (&ctx, result);
-
-  memcpy(acc , &result[4], 4);
+  // optional
+  RU5300SendConfirm();
+  RU5300MoveBuffer();
 
   return 0;
 }
 
-#if 1
+void RU5300ScanForTag() {
+  int          status;
+  uint32_t     t32, t32xor;
+  uint32_t     EP;
+  uint64_t     TID;
+
+  RU5300TimeoutIterate();
+  if (!RU5300Serial) { return; }
+
+  status = RU5300RecvRead(&EP,&TID);
+  if (status==1) return;//wait
+
+  t32=TID;
+  t32xor=TID^(TID>>32);
+
+  //AddLog(LOG_LEVEL_INFO, PSTR("SCAN TAG EP: %08X, TID64: 0x%lX TID: 0x%08X (XOR: 0x%08X)"),EP,TID,t32,t32xor);
+
+  //AddLog(LOG_LEVEL_INFO, PSTR("TAG FOUND %08lX, old tid: %08lx"), (unsigned long)RU5300.LASTTID,(unsigned long)RU5300.TID);
+  //ResponseTime_P(PSTR(",\"RU5300\":{\"UID\":\"%08lX\"}}"), (unsigned long) RU5300.LASTTID);
+
+
+  if (EP==0xe2801160) {
+    RU5300SendByTimeout(t32xor);//FOR R6 send XOR lo and hi TID
+  } else {
+    RU5300SendByTimeout(t32);
+  }
+}
+
 #pragma pack(push,1)
 typedef struct {
   uint32_t  key;         // key for wiegand
@@ -263,78 +321,6 @@ static int RU5300SendUDP(uint32_t key) {
 
   return 0;
 }
-#endif
-
-
-void RU5300ScanForTag() {
-  int          status;
-  uhrtaginfo_t taginfo;
-  uint32_t     pass;
-
-  if (!RU5300Serial) { return; }
-
-  switch (RU5300.stage) {
-    case RU5300_STAGE_SCANTAG:
-
-      AddLog(LOG_LEVEL_DEBUG, PSTR("SCAN"));
-      RU5300SendReadCardTID(0x00000000);
-      RU5300.stage=RU5300_STAGE_RECVSTAG;
-      break;
-    case RU5300_STAGE_RECVSTAG:
-
-      //AddLog(LOG_LEVEL_DEBUG, PSTR("RECV"));
-      status = RU5300RecvReadCardTID(1);
-      if (status==1) break;//wait
-      if ((status==0) || (status==2)) {
-        RU5300.LASTTID=RU5300.TID;
-        RU5300.LASTTID_XOR=RU5300.TID^(RU5300.TID>>32);
-      }
-
-      if (status==2) goto send_tid;
-      if   (status==0) RU5300.stage=RU5300_STAGE_CHKPTAG;
-      else             RU5300.stage=RU5300_STAGE_SCANTAG;//wrong
-      break;
-    case RU5300_STAGE_CHKPTAG:
-      RU5300CalcPass(&pass);
-      AddLog(LOG_LEVEL_INFO, PSTR("CHECK pass %lx for tid: %08lX (%li)"),(unsigned long)pass, (unsigned long)RU5300.TID, (unsigned long)RU5300.TID);
-      RU5300SendReadCardTID(pass);
-      RU5300.stage=RU5300_STAGE_RECVPTAG;
-      break;
-    case RU5300_STAGE_RECVPTAG:
-      //AddLog(LOG_LEVEL_DEBUG, PSTR("RECV pass"));
-      status = RU5300RecvReadCardTID(0);
-      if (status==1) break;//wait
-      if (status==0) {
-        send_tid:
-        AddLog(LOG_LEVEL_INFO, PSTR("TAG FOUND %08lX, old tid: %08lx"), (unsigned long)RU5300.LASTTID,(unsigned long)RU5300.TID);
-        ResponseTime_P(PSTR(",\"RU5300\":{\"UID\":\"%08lX\"}}"), (unsigned long) RU5300.LASTTID);
-
-        if (status==2) {
-          RU5300SendUDP(RU5300.LASTTID);
-        } else {
-          RU5300SendUDP(RU5300.LASTTID_XOR);//FOR R6 send XOR lo and hi TID
-        }
-
-        //udp.beginPacketMulticast(MULTICAST_IP, MULTICAST_PORT, WiFi.localIP());
-        //udp.write("HELLO", 5);
-        //udp.endPacket();
-
-        //MqttPublishTeleSensor();
-      } else {
-        AddLog(LOG_LEVEL_INFO, PSTR("Read error: %i, wrong password?"),status);
-      };
-      RU5300.stage=RU5300_STAGE_SCANTAG;
-      break;
-  }
-}
-
-#ifdef USE_WEBSERVER
-void RU5300Show(void) {
-  if (!RU5300Serial) { return; }
-  WSContentSend_PD(PSTR("{s}RU5300 UID{m}%08X {e}"), RU5300.LASTTID);
-}
-#endif  // USE_WEBSERVER
-
 /*********************************************************************************************\
  * Interface
 \*********************************************************************************************/
@@ -350,13 +336,13 @@ bool Xsns88(byte function) {
     case FUNC_EVERY_50_MSECOND:
       RU5300ScanForTag();
       break;
-#ifdef USE_WEBSERVER
-    case FUNC_WEB_SENSOR:
-      RU5300Show();
-      break;
-#endif  // USE_WEBSERVER
+//#ifdef USE_WEBSERVER
+//    case FUNC_WEB_SENSOR:
+//      RU5300Show();
+//      break;
+//#endif  // USE_WEBSERVER
   }
   return result;
 }
 
-#endif  // USE_RM5300
+#endif  // USE_RU5300
