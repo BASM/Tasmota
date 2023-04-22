@@ -66,26 +66,12 @@
 
 // -- Wi-Fi ---------------------------------------
 #define WIFI_IP_ADDRESS        "0.0.0.0"         // [IpAddress1] Set to 0.0.0.0 for using DHCP or enter a static IP address
-#define WIFI_GATEWAY           "192.168.1.1"     // [IpAddress2] If not using DHCP set Gateway IP address
+#define WIFI_GATEWAY           "192.168.2.8"     // [IpAddress2] If not using DHCP set Gateway IP address
 #define WIFI_SUBNETMASK        "255.255.255.0"   // [IpAddress3] If not using DHCP set Network mask
-#define WIFI_DNS               "192.168.1.1"     // [IpAddress4] If not using DHCP set DNS1 IP address (might be equal to WIFI_GATEWAY)
+#define WIFI_DNS               "192.168.2.8"     // [IpAddress4] If not using DHCP set DNS1 IP address (might be equal to WIFI_GATEWAY)
 #define WIFI_DNS2              "0.0.0.0"         // [IpAddress5] If not using DHCP set DNS2 IP address (might be equal to WIFI_GATEWAY)
 
-#ifndef STA_SSID1
-#define STA_SSID1              ""                // [Ssid1] Wi-Fi SSID
-#endif
-#ifndef STA_PASS1
-#define STA_PASS1              ""                // [Password1] Wi-Fi password
-#endif
-#ifndef STA_SSID2
-#define STA_SSID2              ""                // [Ssid2] Optional alternate AP Wi-Fi SSID
-#endif
-#ifndef STA_PASS2
-#define STA_PASS2              ""                // [Password2] Optional alternate AP Wi-Fi password
-#endif
-#ifndef WIFI_AP_PASSPHRASE
-#define WIFI_AP_PASSPHRASE     ""                // AccessPoint passphrase. For WPA2 min 8 char, for open use "" (max 63 char).
-#endif
+#include "my_pass.inc"
 #define WIFI_CONFIG_TOOL       WIFI_RETRY        // [WifiConfig] Default tool if Wi-Fi fails to connect (default option: 4 - WIFI_RETRY)
                                                  // (WIFI_RESTART, WIFI_MANAGER, WIFI_RETRY, WIFI_WAIT, WIFI_SERIAL, WIFI_MANAGER_RESET_ONLY)
                                                  // The configuration can be changed after first setup using WifiConfig 0, 2, 4, 5, 6 and 7.
@@ -105,7 +91,7 @@
 #define MQTT_LOG_LEVEL         LOG_LEVEL_NONE    // [MqttLog] (LOG_LEVEL_NONE, LOG_LEVEL_ERROR, LOG_LEVEL_INFO, LOG_LEVEL_DEBUG, LOG_LEVEL_DEBUG_MORE)
 
 // -- MQTT ----------------------------------------
-#define MQTT_USE               true              // [SetOption3] Select default MQTT use (false = Off, true = On)
+#define MQTT_USE               false              // [SetOption3] Select default MQTT use (false = Off, true = On)
 
 #define MQTT_KEEPALIVE         30                // [MqttKeepAlive] Number of seconds between KeepAlive messages
 #define MQTT_SOCKET_TIMEOUT    4                 // [MqttTimeout] Number of seconds before Mqtt connection timeout
