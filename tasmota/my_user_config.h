@@ -310,7 +310,7 @@
 //#define APP_INTERLOCK_GROUP_4  0x00              // [Interlock] Relay bitmask for interlock group 4 (0x00 if undef)
 
 // -- Lights --------------------------------------
-#define WS2812_LEDS            30                // [Pixels] Number of WS2812 LEDs to start with (max is 512)
+#define WS2812_LEDS            512               // [Pixels] Number of WS2812 LEDs to start with (max is 512)
 #define LIGHT_MODE             true              // [SetOption15] Switch between commands PWM or COLOR/DIMMER/CT/CHANNEL
 #define LIGHT_CLOCK_DIRECTION  false             // [SetOption16] Switch WS2812 clock between clockwise or counter-clockwise
 #define LIGHT_COLOR_RADIX      false             // [SetOption17] Switch between decimal or hexadecimal color output (false = hexadecimal, true = decimal)
