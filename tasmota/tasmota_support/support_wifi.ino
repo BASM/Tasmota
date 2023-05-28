@@ -1330,7 +1330,6 @@ void WifiPollNtp() {
 }
 
 uint64_t WifiGetNtp(void) {
-  return 0; //XXX FIXME
   static uint8_t ntp_server_id = 0;
 
 //  AddLog(LOG_LEVEL_DEBUG, PSTR("NTP: Start NTP Sync %d ..."), ntp_server_id);
