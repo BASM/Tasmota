@@ -227,6 +227,7 @@ enum UserSelectablePins {
   GPIO_DALI_RX_INV, GPIO_DALI_TX_INV,   // DALI
   GPIO_LD2410S_TX, GPIO_LD2410S_RX,     // HLK-LD2410S
   GPIO_I2C_SER_TX, GPIO_I2C_SER_RX,     // I2C via Serial using SC18IM704 protocol (xdrv74)
+  GPIO_UHF_SER_TX, GPIO_UHF_SER_RX,     // UFH via Serial (xdrv77)
   GPIO_TM1640CLK, GPIO_TM1640DIN,       // TM1640 (16 x seven-segment LED controler)
   GPIO_SENSOR_END };
 
@@ -611,6 +612,11 @@ const uint16_t kGpioNiceList[] PROGMEM = {
   AGPIO(GPIO_I2C_SER_RX) + AGMAX(MAX_I2C),       // I2C via Serial RX
 #endif // USE_I2C_SERIAL
 #endif
+
+#ifdef USE_UHF_SERIAL
+  AGPIO(GPIO_UHF_SER_TX) + AGMAX(MAX_I2C),       // UHF via Serial TX
+  AGPIO(GPIO_UHF_SER_RX) + AGMAX(MAX_I2C),       // UHF via Serial RX
+#endif // USE_UFH_SERIAL
 
 #if defined(USE_I2S_AUDIO) || defined (USE_I2S)
   AGPIO(GPIO_I2S_MCLK) + AGMAX(MAX_I2S),         // I2S master clock
