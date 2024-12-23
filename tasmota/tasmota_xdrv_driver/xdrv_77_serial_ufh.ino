@@ -28,6 +28,9 @@ struct {
   bool           active = false;
   uint8_t        tx = 0;           // GPIO for Serial Tx
   uint8_t        rx = 0;           // GPIO for Serial Rx
+  uint8_t        recv[256];        // UART ans
+   int8_t        idx;              // UART ans idx, -1 no read answer
+   int8_t        timeout;
   TasmotaSerial *serial = NULL;
 } UHF_Serial;
 
@@ -232,9 +235,27 @@ enum URHERRORS {
 };
 
 
+
 static int SendDataToPort(uint8_t *data, int len) {
   int wlen;
-  //if (debug) hexdump("Send data", data, len);
+
+  switch (len) {
+    case 0: AddLog(LOG_LEVEL_ERROR,"OUT PORT ERROR NO DATA"); break;
+    case 1: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x, len: %i", data[0], len); break;
+    case 2: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x, len: %i", data[0], data[1], len); break;
+    case 3: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x, len: %i", data[0], data[1], data[2], len); break;
+    case 4: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], len); break;
+    case 5: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], len); break;
+    case 6: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], data[5], len); break;
+    case 7: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], data[5], data[6], len); break;
+    case 8: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x %x %x %x, len: %i",
+             data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], len); break;
+    default:
+    AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x %x %x %x ... len: %i",
+             data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], len); break;
+  }
+
+  //hexdump("Send data", data, len);
 
   //TODO purgecomm
   wlen=UHF_Serial.serial->write(data,len);
@@ -251,9 +272,7 @@ static int usleep(int ums) {
 //
 static int CmdToReader(uint8_t *data, int size, uint8_t *out, int *len) {
   int     status=0,rlen,rover;
-  uint8_t idx=0;
-  uint8_t cmd,recv[256];
-  int     timeout=1800; // about
+  uint8_t cmd;
   uhrmsgresp_t *resp;
 
   cmd=data[2];//save old cmd
@@ -263,37 +282,8 @@ static int CmdToReader(uint8_t *data, int size, uint8_t *out, int *len) {
 
   status = SendDataToPort  (data, size);
   if (status!=0) return status;
-
-  memset(recv, 0, 256);
-  if (len==NULL) rover=256;
-  else           rover=*len;
-
-  //FIXME first byte is len of message, rover must be use it
-  while (1) {
-    rlen=UHF_Serial.serial->read(&recv[idx], rover);
-    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "read from serial: %i"), rlen);
-    if (rlen>0) idx+=rlen;
-    rover-=rlen;
-    if (CheckCRC(recv, idx) ==0) break;
-    if (rover<=0) {
-      status=UHRERR_OVFLOW;
-      goto ensure;
-    }
-    usleep(10);
-    if (timeout--<=0) {
-      if (debug) printf("ERROR timeout or crc: %i\n", idx);
-      if (idx==0) return UHRERR_TIMEOUT;
-      else        return UHRERR_CRC;
-    }
-  }
-  //if (debug) hexdump("Recv:", recv, idx);
-
-  if (recv[2] != cmd) return UHRERR_UANS;
-
-ensure:
-  memcpy(out, recv, idx);
-  if (len!=NULL) len[0]=idx;
-  if (recv[3] != 0 )  return recv[3];
+  UHF_Serial.idx=0;
+  UHF_Serial.timeout=10;
 
   return status;
 }
@@ -386,8 +376,8 @@ void UHFSerialInit(void) {
   if (PinUsed(GPIO_UHF_SER_TX, bus) && PinUsed(GPIO_UHF_SER_RX, bus)) {
     int baudrate = 57600;
     int hw=1; //HW mode
-    int nwmode=0;
-    int buffer_size=128;
+    int nwmode=1; //interrupt
+    int buffer_size=256;
     bool invert=false;
 
     UHF_Serial.tx = Pin(GPIO_UHF_SER_TX, bus);
@@ -395,11 +385,11 @@ void UHFSerialInit(void) {
 
     AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Init UART, rx: %i, tx: %i hw: %i, nwmode %i, buffsize: %i, invert: %i"), UHF_Serial.rx, UHF_Serial.tx, hw, nwmode, buffer_size, invert);
     UHF_Serial.serial = new TasmotaSerial(UHF_Serial.rx, UHF_Serial.tx, hw, nwmode, buffer_size, invert);
-    if (!UHF_Serial.serial->begin(baudrate, SERIAL_8E1)) {
+    if (!UHF_Serial.serial->begin(baudrate, SERIAL_8N1)) {
       AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Can't init UART"));
       return;
     }
-    res = TestGetReaderInfo();
+    //res = TestGetReaderInfo();
     res=0;
     if (res==0) {
       UHF_Serial.active = true;
@@ -429,15 +419,60 @@ int UhrBeep(int active, int silent, int times) {
   return CmdToReader(tbuff, len, NULL, NULL);
 }
 
+void UHFAnswerParce(void) {
+  int rlen;
+  int rover;
+
+  if (UHF_Serial.idx==-1) return;
+
+  //memset(recv, 0, 256);
+  //if (len==NULL) rover=256;
+  //else           rover=*len;
+  rover=256-UHF_Serial.idx;
+
+  rlen=UHF_Serial.serial->read(&UHF_Serial.recv[UHF_Serial.idx], rover);
+  if (rlen>0) UHF_Serial.idx+=rlen;
+  rover-=rlen;
+  if (CheckCRC(UHF_Serial.recv, UHF_Serial.idx) ==0) {
+    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "SUCCESS Answer recived "));
+    UHF_Serial.idx=-1;
+    return;
+  };
+  if (rover<=0) {
+    //status=UHRERR_OVFLOW;
+    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Overflow"));
+    UHF_Serial.idx=-1;
+    return;
+  }
+  if (UHF_Serial.timeout--<=0) {
+    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "ERROR timeout or crc: data size %i"), UHF_Serial.idx);
+    UHF_Serial.idx=-1;
+    //if (UHF_Serial.idx==0) return UHRERR_TIMEOUT;
+    //else                   return UHRERR_CRC;
+    return;
+  }
+  AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wait more data %i timeout %i"), UHF_Serial.idx, UHF_Serial.timeout);
+  //if (rlen>0)
+  //if (debug) hexdump("Recv:", recv, idx);
+
+  //if (recv[2] != cmd) return UHRERR_UANS;
+//ensure:
+//  memcpy(out, recv, idx);
+//  if (len!=NULL) len[0]=idx;
+//  if (recv[3] != 0 )  return recv[3];
+
+  return ;
+}
 
 void UHFSerialSecond(void) {
   int status;
 
+  if (UHF_Serial.idx!=-1) {
+    AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "waitans, idx: %i, timeout: %i"), UHF_Serial.idx, UHF_Serial.timeout);
+    return;
+  }
+
   status = UhrBeep(1, 1, 1);
-  if (status==0) AddLog(LOG_LEVEL_ERROR,"Beep success");
-  else AddLog(LOG_LEVEL_ERROR,"Beep error");
-
-
   AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Hello world %s asdf"), "42");
 }
 
@@ -451,6 +486,9 @@ bool Xdrv77(uint32_t function) {
     switch (function) {
       case FUNC_EVERY_SECOND:
         UHFSerialSecond();
+        break;
+      case FUNC_EVERY_250_MSECOND:
+        UHFAnswerParce();
         break;
       case FUNC_INIT:
         UHFSerialInit();
