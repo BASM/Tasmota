@@ -148,7 +148,7 @@ typedef struct _uhrreader_ {
 
 typedef struct _ltag_ {
   uint8_t wlen;     // len in words 0..15
-  char    data[32]; // 30 -- max len TAG
+  uint8_t data[32]; // 30 -- max len TAG
 } uhrtag_t;
 
 typedef struct _tid_ {
@@ -241,8 +241,8 @@ struct {
   uint8_t        mode=MODE_INIT;
   uint8_t        waitrecv=MODE_RECV_NONE; // Mode SEND/RECV/SUCCES/ERROR
   uint8_t        recv[256];        // UART ans
-   int8_t        idx=-1;              // UART ans idx, -1 no read answer
-   int8_t        timeout=2;
+   int8_t        idx=-1;           // UART ans idx, -1 no read answer, onty dec timeout
+   int8_t        timeout=10;
   uint8_t        addr=0;
   uhrtag_t       tag;              // work one tag only
   TasmotaSerial *serial = NULL;
@@ -269,7 +269,7 @@ static void dumprecv(const char *name, uint8_t *data, int len) {
 static int SendDataToPort(uint8_t *data, int len) {
   int wlen;
 
-  dumprecv("OUT", data,len);
+  dumprecv("SEND", data, len);
 
   //hexdump("Send data", data, len);
 
@@ -341,20 +341,15 @@ static uint32_t htobe32(uint32_t data) {
  return ntohl(data);
 }
 
-uint64_t be64toh(uint64_t big_endian_64bit) {
-   return ((big_endian_64bit & 0x00000000000000FF) << 56) |
-          ((big_endian_64bit & 0x000000000000FF00) << 40) |
-          ((big_endian_64bit & 0x00000000FF000000) << 24) |
-          ((big_endian_64bit & 0x00FF000000000000) << 8)  |
-          ((big_endian_64bit & 0xFF00000000000000) >> 8)  |
-          ((big_endian_64bit & 0x0000FF0000000000) >> 24) |
-          ((big_endian_64bit & 0x000000FF00000000) >> 40) |
-          ((big_endian_64bit & 0x00000000FFFFFFFF) >> 56);
+#define ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
+uint64_t be64toh(uint64_t data) {
+  return ntohll(data);
 }
 
 static void *AddInt32(void *vptr, uint32_t data) {
   uint32_t *p=(uint32_t *)vptr;
-  p[0]=htobe32(data);
+  uint32_t val=htobe32(data);
+  memcpy(p,&val,4); //not aligment 
   return &p[1];
 }
 
@@ -363,10 +358,10 @@ static void *AddInt32(void *vptr, uint32_t data) {
 // * wlen -- add count (by words)
 // * data -- data
 // \return -- dataptr
-static void *AddData(void *vptr, uint8_t len, char *data) {
+static void *AddData(void *vptr, uint8_t len, uint8_t *data) {
   uint8_t *p=(uint8_t*)vptr;
   p[0]=len;
-  len*=2;
+  len*=2; //Size on word, not bytes
   if (len>0) memcpy(&p[1], data, len);
   return &p[1+len];
 }
@@ -470,7 +465,8 @@ void UHFAnswerParce(void) {
   int rlen;
   int rover;
 
-  if (UHF_Serial.idx==-1) return;
+  if (UHF_Serial.timeout==0) return;
+  if (UHF_Serial.idx==-1) { UHF_Serial.timeout--; return; }
 
   //memset(recv, 0, 256);
   //if (len==NULL) rover=256;
@@ -481,20 +477,20 @@ void UHFAnswerParce(void) {
   if (rlen>0) UHF_Serial.idx+=rlen;
   rover-=rlen;
   if (CheckCRC(UHF_Serial.recv, UHF_Serial.idx) ==0) {
-    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "SUCCESS Answer recived %i size "), UHF_Serial.idx);
+    //AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "SUCCESS Answer recived %i size "), UHF_Serial.idx);
     dumprecv("RECV", UHF_Serial.recv, UHF_Serial.idx);
     UHF_Serial.waitrecv=MODE_RECV_SUCCESS;
-    UHF_Serial.idx=-1;
+    UHF_Serial.timeout=0;
     return;
   };
   if (rover<=0) {
     //status=UHRERR_OVFLOW;
     AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Overflow"));
     UHF_Serial.waitrecv=MODE_RECV_ERROR;
-    UHF_Serial.idx=-1;
+    UHF_Serial.timeout=0;
     return;
   }
-  if (UHF_Serial.timeout--<=0) {
+  if (--UHF_Serial.timeout<=0) {
     uint8_t *data=(uint8_t*)UHF_Serial.recv;
     int      len =UHF_Serial.idx;
 
@@ -502,7 +498,7 @@ void UHFAnswerParce(void) {
 
     AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "ERROR timeout or crc: data size %i"), UHF_Serial.idx);
     UHF_Serial.waitrecv=MODE_RECV_ERROR;
-    UHF_Serial.idx=-1;
+    UHF_Serial.timeout=0;
     //if (UHF_Serial.idx==0) return UHRERR_TIMEOUT;
     //else                   return UHRERR_CRC;
     return;
@@ -565,7 +561,7 @@ static int UhrParseInventory(void *vtags, uint16_t *count) { //FIXME XXX secure 
 int UhrReadCardTID(void *vtag, uint32_t pass) {
   uhrtag_t    *tag=(uhrtag_t *)vtag;
   int          status,rsize,len;
-  uint8_t      tbuff[256];
+  uint8_t      tbuff[128];
   void        *vmsg=tbuff;
 
   vmsg=AddInt8    (vmsg, 0                );  //len
@@ -582,23 +578,27 @@ int UhrReadCardTID(void *vtag, uint32_t pass) {
   len = WriteLen(tbuff, vmsg);
   WriteCRC(tbuff);
 
-  CmdToReader(tbuff, len);
-  return 0;
+  return CmdToReader(tbuff, len);
 }
 
 static int UhrParceReadCardTID(void *vtaginfo, uint64_t *tid) {
+  uint64_t val;
   uhrtaginfo_t *taginfo=(uhrtaginfo_t *)vtaginfo;
 
   if (UHF_Serial.idx!=(12+4+2)) {
-    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wrong answer size"));
+    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wrong answer size, must %i, real: %i"),(12+4+2),UHF_Serial.idx);
     return 1;
   }
 
   memcpy(taginfo, &UHF_Serial.recv[4], 4);
   //memcpy(tid, &tbuff[6], 8);
 
+  memcpy(&val,&UHF_Serial.recv[8],8);
   //*taginfo=be16toh(*((uint16_t*)&tbuff[4]));
-  *tid    =be64toh(*((uint64_t*)&UHF_Serial.recv[8]));
+  
+  tid[0] =be64toh(val);
+  AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "PARCE TAG : %llx"), val);
+  AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "PARCE TAGI: %lx"), taginfo->raw);
 
   //memcpy(data,tbuff+4,16);
   //hexdump("TBUFF", data, 26);
@@ -681,7 +681,7 @@ static int UhrWgSend(uint32_t wgcmd) {
 void UHFSerialSecond(void) {
   int status;
 
-  if (UHF_Serial.idx!=-1) {
+  if (UHF_Serial.timeout!=0) {
     AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "waitans, idx: %i, timeout: %i"), UHF_Serial.idx, UHF_Serial.timeout);
     return;
   }
@@ -690,7 +690,6 @@ void UHFSerialSecond(void) {
     case MODE_INIT:
       switch (UHF_Serial.waitrecv) {
         case MODE_RECV_NONE:
-          if (UHF_Serial.timeout-->=0) break;
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "BEEP init"));
           UhrBeep(1, 1, 3);
           UHF_Serial.waitrecv=MODE_RECV_WAIT;
@@ -725,9 +724,13 @@ void UHFSerialSecond(void) {
           uhrtag_t tags[8]; count=8;
           UhrParseInventory(tags, &count);
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory success... tags count: %i"), count);
-          //UHF_Serial.waitrecv=MODE_RECV_NONE;
-          //UHF_Serial.mode=MODE_READTID; 
-          //UHF_Serial.tag=tags[0];
+          if (count==0) {
+            UHF_Serial.waitrecv=MODE_RECV_NONE;
+            break;
+          }
+          UHF_Serial.waitrecv=MODE_RECV_NONE;
+          UHF_Serial.mode=MODE_READTID;
+          UHF_Serial.tag=tags[0];
           //for (i=0; i<count; i++) {
           //  UhrPrintTag(&tags[i]);
           //}
@@ -737,37 +740,44 @@ void UHFSerialSecond(void) {
           UHF_Serial.waitrecv=MODE_RECV_NONE;
           break;
       }
+      break;
     case MODE_READTID:
       switch(UHF_Serial.waitrecv) {
-        case MODE_RECV_NONE:
-          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Read tid..."));
+        case MODE_RECV_NONE: {
+          uhrtag_t *tag = &UHF_Serial.tag;
+          dumprecv("Read tid", tag->data, tag->wlen);
           UhrReadCardTID(&UHF_Serial.tag, 0x00000000);// try password zero //, &taginfo, &TID);
+          //UhrReadCardTID(NULL, 0x00000000);// try password zero //, &taginfo, &TID);
           UHF_Serial.waitrecv=MODE_RECV_WAIT;
-          break;
+          break; }
         case MODE_RECV_WAIT:
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wait read tid..."));
           break;
         case MODE_RECV_SUCCESS: {
           uint64_t TID;
           uint32_t t32;
+          int      status;
           uhrtag_t      tidtag;
           uhrtaginfo_t  taginfo;
-          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "TID READ SUCCESS..."));
+          AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_APPLICATION "TID READ SUCCESS..."));
 
-          UhrParceReadCardTID(&taginfo, &TID);
+          status=UhrParceReadCardTID(&taginfo, &TID);
+          if (status!=0) {
+            UHF_Serial.waitrecv=MODE_RECV_NONE;
+            UHF_Serial.mode    =MODE_INVENTORY;}
           TagTID2tag(&tidtag, &taginfo, &TID);
           if ((taginfo.raw&0xfffff)==0x180e2) { //Monza R6 do not supported passowrds
             uint32_t t32=xor32(TID);
             //UhrWgSend(uhr, t32);//32 bites
-            AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "WG SEND 1..."));
+            AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "WG SEND 1 %llx..."),t32);
           } else {
+            uint32_t t32=TID;
             //UhrWgSend(uhr, TID);//32 bites
-            AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "WG SEND 2..."));
+            AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "WG SEND 2 %llx..."),t32);
           }
           UHF_Serial.waitrecv=MODE_RECV_NONE;
           UHF_Serial.mode    =MODE_INVENTORY;
-          }
-          break;
+          break; }
         case MODE_RECV_ERROR:
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Error read TID..."));
           UHF_Serial.waitrecv=MODE_RECV_NONE;
