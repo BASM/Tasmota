@@ -280,6 +280,7 @@ static int CmdToReader(uint8_t *data, int size, uint8_t *out, int *len) {
   resp=(uhrmsgresp_t*)out;
   (void)resp;//TODO make the code more readable
 
+  UHF_Serial.serial->flush();
   status = SendDataToPort  (data, size);
   if (status!=0) return status;
   UHF_Serial.idx=0;
@@ -375,9 +376,9 @@ void UHFSerialInit(void) {
   AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "TRY INIT 4"));
   if (PinUsed(GPIO_UHF_SER_TX, bus) && PinUsed(GPIO_UHF_SER_RX, bus)) {
     int baudrate = 57600;
-    int hw=1; //HW mode
+    int hw=0; //HW mode
     int nwmode=1; //interrupt
-    int buffer_size=256;
+    int buffer_size=64;
     bool invert=false;
 
     UHF_Serial.tx = Pin(GPIO_UHF_SER_TX, bus);
@@ -445,13 +446,32 @@ void UHFAnswerParce(void) {
     return;
   }
   if (UHF_Serial.timeout--<=0) {
+    uint8_t *data=(uint8_t*)UHF_Serial.recv;
+    int      len =UHF_Serial.idx;
+
+    switch (len) {
+      case 0: AddLog(LOG_LEVEL_ERROR,"RECV PORT ERROR NO DATA"); break;
+      case 1: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x, len: %i", data[0], len); break;
+      case 2: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x, len: %i", data[0], data[1], len); break;
+      case 3: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x, len: %i", data[0], data[1], data[2], len); break;
+      case 4: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], len); break;
+      case 5: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], len); break;
+      case 6: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], data[5], len); break;
+      case 7: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], data[5], data[6], len); break;
+      case 8: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x %x %x %x, len: %i",
+                  data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], len); break;
+      default:
+              AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x %x %x %x ... len: %i",
+                  data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], len); break;
+    }
+
     AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "ERROR timeout or crc: data size %i"), UHF_Serial.idx);
     UHF_Serial.idx=-1;
     //if (UHF_Serial.idx==0) return UHRERR_TIMEOUT;
     //else                   return UHRERR_CRC;
     return;
   }
-  AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wait more data %i timeout %i"), UHF_Serial.idx, UHF_Serial.timeout);
+  //AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wait more data %i timeout %i"), UHF_Serial.idx, UHF_Serial.timeout);
   //if (rlen>0)
   //if (debug) hexdump("Recv:", recv, idx);
 
