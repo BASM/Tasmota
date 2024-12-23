@@ -271,6 +271,7 @@ static int CmdToReader(uint8_t *data, int size, uint8_t *out, int *len) {
   //FIXME first byte is len of message, rover must be use it
   while (1) {
     rlen=UHF_Serial.serial->read(&recv[idx], rover);
+    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "read from serial: %i"), rlen);
     if (rlen>0) idx+=rlen;
     rover-=rlen;
     if (CheckCRC(recv, idx) ==0) break;
@@ -341,15 +342,15 @@ static int WriteLen(void *mbegin, void *mend) {
 
 static int UhrPrintInfo(void *vinfo) { //тип указывать нельзя, оно как-то автогерентит какую-то фигню и не собирается
   uhrmsginfo_t *info=(uhrmsginfo_t *)vinfo;
-  AddLog(LOG_LEVEL_ERROR,"COM addr     : %x, cmd: %x\n", info->msg.addr, info->msg.cmd);
-  AddLog(LOG_LEVEL_ERROR,"Version      : %x\n", info->version);
-  AddLog(LOG_LEVEL_ERROR,"Support Proto: %x\n", info->supro);
-  AddLog(LOG_LEVEL_ERROR,"Model        : %x\n", info->model);
-  AddLog(LOG_LEVEL_ERROR,"dMaxFre      : %x\n", info->dmaxfre);
-  AddLog(LOG_LEVEL_ERROR,"dMinFre      : %x\n", info->dminfre);
-  AddLog(LOG_LEVEL_ERROR,"power        : %x\n", info->power);
-  AddLog(LOG_LEVEL_ERROR,"scantime     : %x\n", info->scantime);
-  AddLog(LOG_LEVEL_ERROR,"CRC          : %x\n", info->crc);
+  AddLog(LOG_LEVEL_ERROR,"COM addr     : %x, cmd: %x", info->msg.addr, info->msg.cmd);
+  AddLog(LOG_LEVEL_ERROR,"Version      : %x", info->version);
+  AddLog(LOG_LEVEL_ERROR,"Support Proto: %x", info->supro);
+  AddLog(LOG_LEVEL_ERROR,"Model        : %x", info->model);
+  AddLog(LOG_LEVEL_ERROR,"dMaxFre      : %x", info->dmaxfre);
+  AddLog(LOG_LEVEL_ERROR,"dMinFre      : %x", info->dminfre);
+  AddLog(LOG_LEVEL_ERROR,"power        : %x", info->power);
+  AddLog(LOG_LEVEL_ERROR,"scantime     : %x", info->scantime);
+  AddLog(LOG_LEVEL_ERROR,"CRC          : %x", info->crc);
   return 0;
 }
 
@@ -384,11 +385,16 @@ void UHFSerialInit(void) {
   AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "TRY INIT 4"));
   if (PinUsed(GPIO_UHF_SER_TX, bus) && PinUsed(GPIO_UHF_SER_RX, bus)) {
     int baudrate = 57600;
+    int hw=1; //HW mode
+    int nwmode=0;
+    int buffer_size=128;
+    bool invert=false;
 
     UHF_Serial.tx = Pin(GPIO_UHF_SER_TX, bus);
     UHF_Serial.rx = Pin(GPIO_UHF_SER_RX, bus);
 
-    UHF_Serial.serial = new TasmotaSerial(UHF_Serial.rx, UHF_Serial.tx, 2);
+    AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Init UART, rx: %i, tx: %i hw: %i, nwmode %i, buffsize: %i, invert: %i"), UHF_Serial.rx, UHF_Serial.tx, hw, nwmode, buffer_size, invert);
+    UHF_Serial.serial = new TasmotaSerial(UHF_Serial.rx, UHF_Serial.tx, hw, nwmode, buffer_size, invert);
     if (!UHF_Serial.serial->begin(baudrate, SERIAL_8E1)) {
       AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Can't init UART"));
       return;
@@ -427,7 +433,7 @@ int UhrBeep(int active, int silent, int times) {
 void UHFSerialSecond(void) {
   int status;
 
-  status = UhrBeep(1, 1, 2);
+  status = UhrBeep(1, 1, 1);
   if (status==0) AddLog(LOG_LEVEL_ERROR,"Beep success");
   else AddLog(LOG_LEVEL_ERROR,"Beep error");
 
