@@ -3,7 +3,7 @@
 set -ex
 
 
-./off.sh
+./off.sh || true
 make
 #./send.py
 ./send_sens.py

@@ -24,9 +24,8 @@
 #include <TasmotaSerial.h>
 
 #define MODE_INIT        0
-#define MODE_INIT_RECV   1
-#define MODE_CYCLE       2
-#define MODE_CYCLE_RECV  3
+#define MODE_INVENTORY   1
+#define MODE_READTID     2
 
 #define MODE_RECV_NONE     0
 #define MODE_RECV_WAIT     1
@@ -34,18 +33,6 @@
 #define MODE_RECV_ERROR    3
 
 static int debug=0;
-struct {
-  bool           active = false;
-  uint8_t        tx = 0;           // GPIO for Serial Tx
-  uint8_t        rx = 0;           // GPIO for Serial Rx
-  uint8_t        mode=MODE_INIT;
-  uint8_t        waitrecv=MODE_RECV_NONE; // Mode SEND/RECV/SUCCES/ERROR
-  uint8_t        recv[256];        // UART ans
-   int8_t        idx=-1;              // UART ans idx, -1 no read answer
-   int8_t        timeout=2;
-  uint8_t        addr=0;
-  TasmotaSerial *serial = NULL;
-} UHF_Serial;
 
 enum COMMANDS {
   ///////////////////////////////////////////////////////////////////
@@ -247,6 +234,21 @@ enum URHERRORS {
   UHRERR_INVALID  =0xFF,
 };
 
+struct {
+  bool           active = false;
+  uint8_t        tx = 0;           // GPIO for Serial Tx
+  uint8_t        rx = 0;           // GPIO for Serial Rx
+  uint8_t        mode=MODE_INIT;
+  uint8_t        waitrecv=MODE_RECV_NONE; // Mode SEND/RECV/SUCCES/ERROR
+  uint8_t        recv[256];        // UART ans
+   int8_t        idx=-1;              // UART ans idx, -1 no read answer
+   int8_t        timeout=2;
+  uint8_t        addr=0;
+  uhrtag_t       tag;              // work one tag only
+  TasmotaSerial *serial = NULL;
+} UHF_Serial;
+
+
 
 static void dumprecv(const char *name, uint8_t *data, int len) {
   int  i;
@@ -333,6 +335,40 @@ static void *AddInt8(void *vptr, uint8_t data) {
   uint8_t *p=(uint8_t*)vptr;
   p[0]=data;
   return &p[1];
+}
+
+static uint32_t htobe32(uint32_t data) {
+ return ntohl(data);
+}
+
+uint64_t be64toh(uint64_t big_endian_64bit) {
+   return ((big_endian_64bit & 0x00000000000000FF) << 56) |
+          ((big_endian_64bit & 0x000000000000FF00) << 40) |
+          ((big_endian_64bit & 0x00000000FF000000) << 24) |
+          ((big_endian_64bit & 0x00FF000000000000) << 8)  |
+          ((big_endian_64bit & 0xFF00000000000000) >> 8)  |
+          ((big_endian_64bit & 0x0000FF0000000000) >> 24) |
+          ((big_endian_64bit & 0x000000FF00000000) >> 40) |
+          ((big_endian_64bit & 0x00000000FFFFFFFF) >> 56);
+}
+
+static void *AddInt32(void *vptr, uint32_t data) {
+  uint32_t *p=(uint32_t *)vptr;
+  p[0]=htobe32(data);
+  return &p[1];
+}
+
+// Add data to msg request
+// * vptr -- buffer,
+// * wlen -- add count (by words)
+// * data -- data
+// \return -- dataptr
+static void *AddData(void *vptr, uint8_t len, char *data) {
+  uint8_t *p=(uint8_t*)vptr;
+  p[0]=len;
+  len*=2;
+  if (len>0) memcpy(&p[1], data, len);
+  return &p[1+len];
 }
 
 static int WriteLen(void *mbegin, void *mend) {
@@ -513,18 +549,134 @@ static int UhrParseInventory(void *vtags, uint16_t *count) { //FIXME XXX secure 
   uhrmsginv_t  *msg=(uhrmsginv_t  *)UHF_Serial.recv;
   uhrtag_t *tags=(uhrtag_t *)vtags;
 
-  if (msg->count > 200) { *count=0; return 0; }
+  if (msg->count > 200) { *count=0; return 0; } //sorry, FIXME too
   t=(uhrtag_t *)msg->mtag;
   for (i=0; i < msg->count; i++) {
     if (i>=*count) break;
     tags[i].wlen=t->wlen/2;
     memcpy(tags[i].data,t->data,t->wlen);
 
-    t=(uhrtag_t *)(((uint8_t*)t)+sizeof(t->wlen)+t->wlen);//FIXME checkit
+    t=(uhrtag_t *)(((uint8_t*)t)+sizeof(t->wlen)+t->wlen);//FIXME checkit , one label check only
   }
   *count=msg->count;
   return 0;
 }
+
+int UhrReadCardTID(void *vtag, uint32_t pass) {
+  uhrtag_t    *tag=(uhrtag_t *)vtag;
+  int          status,rsize,len;
+  uint8_t      tbuff[256];
+  void        *vmsg=tbuff;
+
+  vmsg=AddInt8    (vmsg, 0                );  //len
+  vmsg=AddInt8    (vmsg, UHF_Serial.addr  );  //address
+  vmsg=AddInt8    (vmsg, CMD_UHF_READ_DATA);  //cmd
+  if (tag==NULL)
+       vmsg=AddData  (vmsg, 0, NULL);
+  else vmsg=AddData  (vmsg, tag->wlen, tag->data);
+  vmsg=AddInt8    (vmsg, UHRMEM_TID);     //mem type
+  vmsg=AddInt8    (vmsg, 0);              //start
+  vmsg=AddInt8    (vmsg, 6);              //world count 
+  vmsg=AddInt32   (vmsg, pass);           //password
+
+  len = WriteLen(tbuff, vmsg);
+  WriteCRC(tbuff);
+
+  CmdToReader(tbuff, len);
+  return 0;
+}
+
+static int UhrParceReadCardTID(void *vtaginfo, uint64_t *tid) {
+  uhrtaginfo_t *taginfo=(uhrtaginfo_t *)vtaginfo;
+
+  if (UHF_Serial.idx!=(12+4+2)) {
+    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wrong answer size"));
+    return 1;
+  }
+
+  memcpy(taginfo, &UHF_Serial.recv[4], 4);
+  //memcpy(tid, &tbuff[6], 8);
+
+  //*taginfo=be16toh(*((uint16_t*)&tbuff[4]));
+  *tid    =be64toh(*((uint64_t*)&UHF_Serial.recv[8]));
+
+  //memcpy(data,tbuff+4,16);
+  //hexdump("TBUFF", data, 26);
+
+  return 0;
+}
+
+static void TagTID2tag(void *vtag, void *vinfo, uint64_t *TID) {
+  uhrtag_t     *tag  =(uhrtag_t *)    vtag;
+  uhrtaginfo_t *info =(uhrtaginfo_t *)vinfo;
+  uint64_t htid=be64toh(*TID);
+  tag->wlen=6;
+  memcpy(&tag->data[0], info  , sizeof(info[0]));
+  memcpy(&tag->data[4], &htid , 8);
+}
+
+static uint32_t xor32(uint64_t a) {
+  return a^(a>>32);
+}
+
+#define WGPULSETIME 2
+#define WGPAUSETIME 20
+static int sendone(void) {
+  //uartdtr(fd, 1); // DTR --
+  usleep(WGPULSETIME);
+  //uartdtr(fd, 0); // DTR --
+  AddLog(LOG_LEVEL_INFO, PSTR("WG1"));
+  return 0;
+}
+
+static int sendzero(void) {
+  //uartrts(fd, 1); // RTS --
+  usleep(WGPULSETIME);
+  //uartrts(fd, 0); // RTS --
+  AddLog(LOG_LEVEL_INFO, PSTR("WG0"));
+  return 0;
+}
+
+static int senduint32_t(uint32_t cmdle) {
+  int i;
+  int tmp;
+  int odd=1,even=0;
+  //uint32_t cmd=htobe32(cmdle);
+  uint32_t cmd=cmdle;
+
+  for (tmp=0,i=0; i<16; i++)
+    if ((cmd>>i)&1) tmp++;
+  if ((tmp%2)==0) odd=0;
+
+  for (tmp=0,i=16; i<32; i++)
+    if ((cmd>>i)&1) tmp++;
+  if ((tmp%2)==0) even=1;
+
+  if (even)  sendzero();
+  else       sendone();
+  usleep(WGPAUSETIME);
+
+  if (debug) printf(" ");
+  for (i=0; i<32; i++) {
+    int b = (cmd>>(31-i))&1;
+    if (b) sendone();
+    else   sendzero();
+    usleep(WGPAUSETIME);
+    if ((i%8)==7) if (debug) printf(" ");
+  }
+
+  if (odd) sendzero();
+  else     sendone();
+  usleep(WGPAUSETIME);
+  return 0;
+}
+
+static int UhrWgSend(uint32_t wgcmd) {
+  senduint32_t(wgcmd);
+  //usleep(10000);
+  return 0;
+}
+
 
 void UHFSerialSecond(void) {
   int status;
@@ -548,7 +700,7 @@ void UHFSerialSecond(void) {
           break;
         case MODE_RECV_SUCCESS:
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Recived, switch to CYCLE mode..."));
-          UHF_Serial.mode=MODE_CYCLE;
+          UHF_Serial.mode=MODE_INVENTORY;
           UHF_Serial.waitrecv=MODE_RECV_NONE;
           break;
         case MODE_RECV_ERROR:
@@ -558,7 +710,7 @@ void UHFSerialSecond(void) {
           break;
       }
       break;
-    case MODE_CYCLE:
+    case MODE_INVENTORY:
       switch(UHF_Serial.waitrecv) {
         case MODE_RECV_NONE:
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory..."));
@@ -573,10 +725,53 @@ void UHFSerialSecond(void) {
           uhrtag_t tags[8]; count=8;
           UhrParseInventory(tags, &count);
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory success... tags count: %i"), count);
-
+          //UHF_Serial.waitrecv=MODE_RECV_NONE;
+          //UHF_Serial.mode=MODE_READTID; 
+          //UHF_Serial.tag=tags[0];
+          //for (i=0; i<count; i++) {
+          //  UhrPrintTag(&tags[i]);
+          //}
           break; }
         case MODE_RECV_ERROR:
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory error..."));
+          UHF_Serial.waitrecv=MODE_RECV_NONE;
+          break;
+      }
+    case MODE_READTID:
+      switch(UHF_Serial.waitrecv) {
+        case MODE_RECV_NONE:
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Read tid..."));
+          UhrReadCardTID(&UHF_Serial.tag, 0x00000000);// try password zero //, &taginfo, &TID);
+          UHF_Serial.waitrecv=MODE_RECV_WAIT;
+          break;
+        case MODE_RECV_WAIT:
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wait read tid..."));
+          break;
+        case MODE_RECV_SUCCESS: {
+          uint64_t TID;
+          uint32_t t32;
+          uhrtag_t      tidtag;
+          uhrtaginfo_t  taginfo;
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "TID READ SUCCESS..."));
+
+          UhrParceReadCardTID(&taginfo, &TID);
+          TagTID2tag(&tidtag, &taginfo, &TID);
+          if ((taginfo.raw&0xfffff)==0x180e2) { //Monza R6 do not supported passowrds
+            uint32_t t32=xor32(TID);
+            //UhrWgSend(uhr, t32);//32 bites
+            AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "WG SEND 1..."));
+          } else {
+            //UhrWgSend(uhr, TID);//32 bites
+            AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "WG SEND 2..."));
+          }
+          UHF_Serial.waitrecv=MODE_RECV_NONE;
+          UHF_Serial.mode    =MODE_INVENTORY;
+          }
+          break;
+        case MODE_RECV_ERROR:
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Error read TID..."));
+          UHF_Serial.waitrecv=MODE_RECV_NONE;
+          UHF_Serial.mode    =MODE_INVENTORY;
           break;
       }
       break;
