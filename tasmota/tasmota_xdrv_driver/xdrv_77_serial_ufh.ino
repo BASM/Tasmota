@@ -23,14 +23,27 @@
 
 #include <TasmotaSerial.h>
 
+#define MODE_INIT        0
+#define MODE_INIT_RECV   1
+#define MODE_CYCLE       2
+#define MODE_CYCLE_RECV  3
+
+#define MODE_RECV_NONE     0
+#define MODE_RECV_WAIT     1
+#define MODE_RECV_SUCCESS  2
+#define MODE_RECV_ERROR    3
+
 static int debug=0;
 struct {
   bool           active = false;
   uint8_t        tx = 0;           // GPIO for Serial Tx
   uint8_t        rx = 0;           // GPIO for Serial Rx
+  uint8_t        mode=MODE_INIT;
+  uint8_t        waitrecv=MODE_RECV_NONE; // Mode SEND/RECV/SUCCES/ERROR
   uint8_t        recv[256];        // UART ans
-   int8_t        idx;              // UART ans idx, -1 no read answer
-   int8_t        timeout;
+   int8_t        idx=-1;              // UART ans idx, -1 no read answer
+   int8_t        timeout=2;
+  uint8_t        addr=0;
   TasmotaSerial *serial = NULL;
 } UHF_Serial;
 
@@ -235,25 +248,26 @@ enum URHERRORS {
 };
 
 
+static void dumprecv(char *name, uint8_t *data, int len) {
+  int  i;
+  int  idx=0;
+  char buff[512];
+
+  strcpy(buff, name);
+  idx=strlen(buff);
+  for (i=0; i<len; i++) {
+    sprintf(&buff[idx],"%2.2X ",data[i]);
+    idx=strlen(buff);
+  }
+
+  AddLog(LOG_LEVEL_INFO,buff);
+  return ;
+}
 
 static int SendDataToPort(uint8_t *data, int len) {
   int wlen;
 
-  switch (len) {
-    case 0: AddLog(LOG_LEVEL_ERROR,"OUT PORT ERROR NO DATA"); break;
-    case 1: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x, len: %i", data[0], len); break;
-    case 2: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x, len: %i", data[0], data[1], len); break;
-    case 3: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x, len: %i", data[0], data[1], data[2], len); break;
-    case 4: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], len); break;
-    case 5: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], len); break;
-    case 6: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], data[5], len); break;
-    case 7: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], data[5], data[6], len); break;
-    case 8: AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x %x %x %x, len: %i",
-             data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], len); break;
-    default:
-    AddLog(LOG_LEVEL_ERROR,"OUT PORT data %x %x %x %x %x %x %x %x ... len: %i",
-             data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], len); break;
-  }
+  dumprecv("OUT", data,len);
 
   //hexdump("Send data", data, len);
 
@@ -270,15 +284,11 @@ static int usleep(int ums) {
 
 // Send command and read answer from device
 //
-static int CmdToReader(uint8_t *data, int size, uint8_t *out, int *len) {
+static int CmdToReader(uint8_t *data, int size) {
   int     status=0,rlen,rover;
   uint8_t cmd;
-  uhrmsgresp_t *resp;
 
   cmd=data[2];//save old cmd
-  if (out==NULL) out=data;
-  resp=(uhrmsgresp_t*)out;
-  (void)resp;//TODO make the code more readable
 
   UHF_Serial.serial->flush();
   status = SendDataToPort  (data, size);
@@ -352,7 +362,7 @@ static int UhrGetReaderInformation(void *vinfo) {
   info->msg.cmd  = CMD_GET_READER_INFO;
   UhrWriteCRC(info->msg.raw, info->msg.len-1);
 
-  return CmdToReader(info->msg.raw, info->msg.len + 1, NULL, NULL);
+  return CmdToReader(info->msg.raw, info->msg.len + 1);
 }
 
 static int TestGetReaderInfo(void) {
@@ -377,8 +387,8 @@ void UHFSerialInit(void) {
   if (PinUsed(GPIO_UHF_SER_TX, bus) && PinUsed(GPIO_UHF_SER_RX, bus)) {
     int baudrate = 57600;
     int hw=0; //HW mode
-    int nwmode=1; //interrupt
-    int buffer_size=64;
+    int nwmode=0; //interrupt
+    int buffer_size=256;
     bool invert=false;
 
     UHF_Serial.tx = Pin(GPIO_UHF_SER_TX, bus);
@@ -386,7 +396,7 @@ void UHFSerialInit(void) {
 
     AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Init UART, rx: %i, tx: %i hw: %i, nwmode %i, buffsize: %i, invert: %i"), UHF_Serial.rx, UHF_Serial.tx, hw, nwmode, buffer_size, invert);
     UHF_Serial.serial = new TasmotaSerial(UHF_Serial.rx, UHF_Serial.tx, hw, nwmode, buffer_size, invert);
-    if (!UHF_Serial.serial->begin(baudrate, SERIAL_8N1)) {
+    if (!UHF_Serial.serial->begin(baudrate)) {
       AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Can't init UART"));
       return;
     }
@@ -403,12 +413,11 @@ void UHFSerialInit(void) {
 
 int UhrBeep(int active, int silent, int times) {
   int           len;
-  int           addr=0;
   uint8_t       tbuff[64];
   uint8_t      *vmsg=tbuff;
 
-  vmsg=(uint8_t*)AddInt8    (vmsg, 0            );  //len
-  vmsg=(uint8_t*)AddInt8    (vmsg, addr         );  //address
+  vmsg=(uint8_t*)AddInt8    (vmsg, 0               );  //len
+  vmsg=(uint8_t*)AddInt8    (vmsg, UHF_Serial.addr );  //address
   vmsg=(uint8_t*)AddInt8    (vmsg, CMD_UHF_ACOUSTO_OPTIC_CTL);  //cmd
   vmsg=(uint8_t*)AddInt8    (vmsg, active       );  //active
   vmsg=(uint8_t*)AddInt8    (vmsg, silent       );  //silent
@@ -417,8 +426,9 @@ int UhrBeep(int active, int silent, int times) {
   len = WriteLen(tbuff, vmsg);
   WriteCRC(tbuff);
 
-  return CmdToReader(tbuff, len, NULL, NULL);
+  return CmdToReader(tbuff, len);
 }
+
 
 void UHFAnswerParce(void) {
   int rlen;
@@ -435,13 +445,16 @@ void UHFAnswerParce(void) {
   if (rlen>0) UHF_Serial.idx+=rlen;
   rover-=rlen;
   if (CheckCRC(UHF_Serial.recv, UHF_Serial.idx) ==0) {
-    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "SUCCESS Answer recived "));
+    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "SUCCESS Answer recived %i size "), UHF_Serial.idx);
+    dumprecv("RECV", UHF_Serial.recv, UHF_Serial.idx);
+    UHF_Serial.waitrecv=MODE_RECV_SUCCESS;
     UHF_Serial.idx=-1;
     return;
   };
   if (rover<=0) {
     //status=UHRERR_OVFLOW;
     AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Overflow"));
+    UHF_Serial.waitrecv=MODE_RECV_ERROR;
     UHF_Serial.idx=-1;
     return;
   }
@@ -449,23 +462,10 @@ void UHFAnswerParce(void) {
     uint8_t *data=(uint8_t*)UHF_Serial.recv;
     int      len =UHF_Serial.idx;
 
-    switch (len) {
-      case 0: AddLog(LOG_LEVEL_ERROR,"RECV PORT ERROR NO DATA"); break;
-      case 1: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x, len: %i", data[0], len); break;
-      case 2: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x, len: %i", data[0], data[1], len); break;
-      case 3: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x, len: %i", data[0], data[1], data[2], len); break;
-      case 4: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], len); break;
-      case 5: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], len); break;
-      case 6: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], data[5], len); break;
-      case 7: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x %x %x, len: %i", data[0], data[1], data[2], data[3], data[4], data[5], data[6], len); break;
-      case 8: AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x %x %x %x, len: %i",
-                  data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], len); break;
-      default:
-              AddLog(LOG_LEVEL_ERROR,"RECV PORT data %x %x %x %x %x %x %x %x ... len: %i",
-                  data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], len); break;
-    }
+    dumprecv("RECV PORT ERR", data,len);
 
     AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "ERROR timeout or crc: data size %i"), UHF_Serial.idx);
+    UHF_Serial.waitrecv=MODE_RECV_ERROR;
     UHF_Serial.idx=-1;
     //if (UHF_Serial.idx==0) return UHRERR_TIMEOUT;
     //else                   return UHRERR_CRC;
@@ -484,6 +484,46 @@ void UHFAnswerParce(void) {
   return ;
 }
 
+typedef struct _uhrinv_ {
+  uhrmsg_t msg;        // 0x00 -- 0x02
+  uint8_t status;
+  uint8_t count;
+  uint8_t mtag[254];// [ [len + EPC], [len+EPC]... ]
+  uint16_t crc;
+} uhrmsginv_t;
+
+static int UhrInventory(void) {
+  int status,len;
+  uint8_t       tbuff[16];
+  uint8_t      *vmsg=tbuff;
+
+  vmsg=(uint8_t*)AddInt8    (vmsg, sizeof(uhrmsg_t)+1 );  //len
+  vmsg=(uint8_t*)AddInt8    (vmsg, UHF_Serial.addr    );  //address
+  vmsg=(uint8_t*)AddInt8    (vmsg, CMD_INVENTORY      );  //cmd
+
+  len = WriteLen(tbuff, vmsg);
+  WriteCRC(tbuff);
+
+  return CmdToReader(tbuff, len);
+}
+
+static int UhrParseInventory(void *vtags, uint16_t *count) {
+  int i;
+  uhrtag_t *t;
+  uhrmsginv_t  *msg=(uhrmsginv_t  *)UHF_Serial.recv;
+  uhrtag_t *tags=(uhrtag_t *)vtags;
+
+  t=(uhrtag_t *)msg->mtag;
+  for (i=0; i < msg->count; i++) {
+    if (i>=*count) break;
+    tags[i].wlen=t->wlen/2;
+    memcpy(tags[i].data,t->data,t->wlen);
+
+    t=(uhrtag_t *)(((uint8_t*)t)+sizeof(t->wlen)+t->wlen);//FIXME checkit
+  }
+  *count=msg->count;
+}
+
 void UHFSerialSecond(void) {
   int status;
 
@@ -492,8 +532,54 @@ void UHFSerialSecond(void) {
     return;
   }
 
-  status = UhrBeep(1, 1, 1);
-  AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Hello world %s asdf"), "42");
+  switch (UHF_Serial.mode) {
+    case MODE_INIT:
+      switch (UHF_Serial.waitrecv) {
+        case MODE_RECV_NONE:
+          if (UHF_Serial.timeout-->=0) break;
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "BEEP init"));
+          UhrBeep(1, 1, 3);
+          UHF_Serial.waitrecv=MODE_RECV_WAIT;
+          break;
+        case MODE_RECV_WAIT:
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wait beep..."));
+          break;
+        case MODE_RECV_SUCCESS:
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Recived, switch to CYCLE mode..."));
+          UHF_Serial.mode=MODE_CYCLE;
+          UHF_Serial.waitrecv=MODE_RECV_NONE;
+          break;
+        case MODE_RECV_ERROR:
+          AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Wrong UHF reader, beeping..."));
+          UhrBeep(1, 1, 1);
+          UHF_Serial.waitrecv=MODE_RECV_WAIT;
+          break;
+      }
+      break;
+    case MODE_CYCLE:
+      switch(UHF_Serial.waitrecv) {
+        case MODE_RECV_NONE:
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory..."));
+          UhrInventory();
+          UHF_Serial.waitrecv=MODE_RECV_WAIT;
+          break;
+        case MODE_RECV_WAIT:
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wait recv Inventory..."));
+          break;
+        case MODE_RECV_SUCCESS: {
+          uint16_t count;
+          uhrtag_t tags[8]; count=8;
+          UhrParseInventory(tags, &count);
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory success... tags count: %i"), count);
+
+          break; }
+        case MODE_RECV_ERROR:
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory error..."));
+          break;
+      }
+      break;
+  }
+  return ;
 }
 
 
