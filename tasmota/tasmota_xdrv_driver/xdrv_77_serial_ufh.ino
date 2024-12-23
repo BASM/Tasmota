@@ -248,7 +248,7 @@ enum URHERRORS {
 };
 
 
-static void dumprecv(char *name, uint8_t *data, int len) {
+static void dumprecv(const char *name, uint8_t *data, int len) {
   int  i;
   int  idx=0;
   char buff[512];
@@ -256,7 +256,7 @@ static void dumprecv(char *name, uint8_t *data, int len) {
   strcpy(buff, name);
   idx=strlen(buff);
   for (i=0; i<len; i++) {
-    sprintf(&buff[idx],"%2.2X ",data[i]);
+    sprintf(&buff[idx]," %2.2X",data[i]);
     idx=strlen(buff);
   }
 
@@ -507,12 +507,13 @@ static int UhrInventory(void) {
   return CmdToReader(tbuff, len);
 }
 
-static int UhrParseInventory(void *vtags, uint16_t *count) {
+static int UhrParseInventory(void *vtags, uint16_t *count) { //FIXME XXX secure violation: no check UHF_Serial.idx
   int i;
   uhrtag_t *t;
   uhrmsginv_t  *msg=(uhrmsginv_t  *)UHF_Serial.recv;
   uhrtag_t *tags=(uhrtag_t *)vtags;
 
+  if (msg->count > 200) { *count=0; return 0; }
   t=(uhrtag_t *)msg->mtag;
   for (i=0; i < msg->count; i++) {
     if (i>=*count) break;
@@ -522,6 +523,7 @@ static int UhrParseInventory(void *vtags, uint16_t *count) {
     t=(uhrtag_t *)(((uint8_t*)t)+sizeof(t->wlen)+t->wlen);//FIXME checkit
   }
   *count=msg->count;
+  return 0;
 }
 
 void UHFSerialSecond(void) {
