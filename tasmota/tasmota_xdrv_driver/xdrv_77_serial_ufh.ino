@@ -435,6 +435,8 @@ void UHFSerialInit(void) {
 
       pinMode(UHF_Serial.wgd0,OUTPUT);
       pinMode(UHF_Serial.wgd1,OUTPUT);
+      digitalWrite(UHF_Serial.wgd0,HIGH);
+      digitalWrite(UHF_Serial.wgd1,HIGH);
       UHF_Serial.wg   = 1;
     }
 
@@ -635,16 +637,16 @@ static uint32_t xor32(uint64_t a) {
 #define WGPULSETIME 2
 #define WGPAUSETIME 20
 static int sendone(void) {
-  digitalWrite(UHF_Serial.wgd1,HIGH);
-  usleep(WGPULSETIME);
   digitalWrite(UHF_Serial.wgd1,LOW);
+  usleep(WGPULSETIME);
+  digitalWrite(UHF_Serial.wgd1,HIGH);
   return 0;
 }
 
 static int sendzero(void) {
-  digitalWrite(UHF_Serial.wgd0,HIGH);
-  usleep(WGPULSETIME);
   digitalWrite(UHF_Serial.wgd0,LOW);
+  usleep(WGPULSETIME);
+  digitalWrite(UHF_Serial.wgd0,HIGH);
   return 0;
 }
 
