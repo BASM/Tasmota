@@ -26,6 +26,7 @@
 #define MODE_INIT        0
 #define MODE_INVENTORY   1
 #define MODE_READTID     2
+#define MODE_BEEP        3
 
 #define MODE_RECV_NONE     0
 #define MODE_RECV_WAIT     1
@@ -786,8 +787,8 @@ void UHFSerialSecond(void) {
             AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "WG SEND 2 %llx..."),t32);
             UhrBeep(1, 1, 2);
           }
-          UHF_Serial.waitrecv=MODE_RECV_NONE;
-          UHF_Serial.mode    =MODE_INVENTORY;
+          UHF_Serial.waitrecv=MODE_RECV_WAIT;
+          UHF_Serial.mode    =MODE_BEEP;
           break; }
         case MODE_RECV_ERROR:
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Error read TID..."));
@@ -795,6 +796,18 @@ void UHFSerialSecond(void) {
           UHF_Serial.mode    =MODE_INVENTORY;
           break;
       }
+      break;
+      case MODE_BEEP:
+        switch(UHF_Serial.waitrecv) {
+          case MODE_RECV_WAIT:
+            AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wait read tid..."));
+            break;
+          case MODE_RECV_SUCCESS:
+          case MODE_RECV_ERROR:
+            UHF_Serial.waitrecv=MODE_RECV_NONE;
+            UHF_Serial.mode    =MODE_INVENTORY;
+            break;
+        }
       break;
   }
   return ;
