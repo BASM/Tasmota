@@ -712,6 +712,8 @@
 #define D_SENSOR_I2S_DAC       "I2S DAC"
 #define D_SENSOR_UHF_SER_TX    "UHF Ser TX"
 #define D_SENSOR_UHF_SER_RX    "UHF Ser RX"
+#define D_SENSOR_UHF_WGD0      "UHF WG D0"
+#define D_SENSOR_UHF_WGD1      "UHF WG D1"
 #define D_SENSOR_HDMI_CEC      "HDMI CEC"
 #define D_SENSOR_WS2812        "WS2812"
 #define D_SENSOR_DFR562        "MP3 Player"

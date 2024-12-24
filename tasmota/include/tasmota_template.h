@@ -228,6 +228,7 @@ enum UserSelectablePins {
   GPIO_LD2410S_TX, GPIO_LD2410S_RX,     // HLK-LD2410S
   GPIO_I2C_SER_TX, GPIO_I2C_SER_RX,     // I2C via Serial using SC18IM704 protocol (xdrv74)
   GPIO_UHF_SER_TX, GPIO_UHF_SER_RX,     // UFH via Serial (xdrv77)
+  GPIO_UHF_WGD0, GPIO_UHF_WGD1,         // UFH via Serial wiegand port (xdrv77)
   GPIO_TM1640CLK, GPIO_TM1640DIN,       // TM1640 (16 x seven-segment LED controler)
   GPIO_SENSOR_END };
 
@@ -504,6 +505,7 @@ const char kSensorNames[] PROGMEM =
   D_SENSOR_LD2410S_TX "|" D_SENSOR_LD2410S_RX "|"
   D_SENSOR_I2C_SER_TX "|" D_SENSOR_I2C_SER_RX "|"
   D_SENSOR_UHF_SER_TX "|" D_SENSOR_UHF_SER_RX "|"
+  D_SENSOR_UHF_WGD0 "|" D_SENSOR_UHF_WGD1 "|"
   D_SENSOR_TM1640_CLK "|" D_SENSOR_TM1640_DIN "|"
   ;
 
@@ -615,8 +617,10 @@ const uint16_t kGpioNiceList[] PROGMEM = {
 #endif
 
 #ifdef USE_UHF_SERIAL
-  AGPIO(GPIO_UHF_SER_TX) + AGMAX(MAX_I2C),       // UHF via Serial TX
-  AGPIO(GPIO_UHF_SER_RX) + AGMAX(MAX_I2C),       // UHF via Serial RX
+  AGPIO(GPIO_UHF_SER_TX),       // UHF via Serial TX
+  AGPIO(GPIO_UHF_SER_RX),       // UHF via Serial RX
+  AGPIO(GPIO_UHF_WGD0),         // UHF via Serial TX
+  AGPIO(GPIO_UHF_WGD1),         // UHF via Serial RX
 #endif // USE_UFH_SERIAL
 
 #if defined(USE_I2S_AUDIO) || defined (USE_I2S)

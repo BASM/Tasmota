@@ -238,6 +238,9 @@ struct {
   bool           active = false;
   uint8_t        tx = 0;           // GPIO for Serial Tx
   uint8_t        rx = 0;           // GPIO for Serial Rx
+  uint8_t        wg=0;             // wiegand init
+  uint8_t        wgd0=0;           // wiegand D0
+  uint8_t        wgd1=0;           // wiegand D1
   uint8_t        mode=MODE_INIT;
   uint8_t        waitrecv=MODE_RECV_NONE; // Mode SEND/RECV/SUCCES/ERROR
   uint8_t        recv[256];        // UART ans
@@ -424,6 +427,15 @@ void UHFSerialInit(void) {
 
     UHF_Serial.tx = Pin(GPIO_UHF_SER_TX, bus);
     UHF_Serial.rx = Pin(GPIO_UHF_SER_RX, bus);
+
+    if (PinUsed(GPIO_UHF_WGD0, bus) && PinUsed(GPIO_UHF_WGD1, bus)) {
+      UHF_Serial.wgd0 = Pin(GPIO_UHF_WGD0, bus);
+      UHF_Serial.wgd1 = Pin(GPIO_UHF_WGD1, bus);
+
+      pinMode(UHF_Serial.wgd0,OUTPUT);
+      pinMode(UHF_Serial.wgd1,OUTPUT);
+      UHF_Serial.wg   = 1;
+    }
 
     AddLog(LOG_LEVEL_ERROR, PSTR(D_LOG_APPLICATION "Init UART, rx: %i, tx: %i hw: %i, nwmode %i, buffsize: %i, invert: %i"), UHF_Serial.rx, UHF_Serial.tx, hw, nwmode, buffer_size, invert);
     UHF_Serial.serial = new TasmotaSerial(UHF_Serial.rx, UHF_Serial.tx, hw, nwmode, buffer_size, invert);
@@ -622,18 +634,16 @@ static uint32_t xor32(uint64_t a) {
 #define WGPULSETIME 2
 #define WGPAUSETIME 20
 static int sendone(void) {
-  //uartdtr(fd, 1); // DTR --
+  digitalWrite(UHF_Serial.wgd1,HIGH);
   usleep(WGPULSETIME);
-  //uartdtr(fd, 0); // DTR --
-  AddLog(LOG_LEVEL_INFO, PSTR("WG1"));
+  digitalWrite(UHF_Serial.wgd1,LOW);
   return 0;
 }
 
 static int sendzero(void) {
-  //uartrts(fd, 1); // RTS --
+  digitalWrite(UHF_Serial.wgd0,HIGH);
   usleep(WGPULSETIME);
-  //uartrts(fd, 0); // RTS --
-  AddLog(LOG_LEVEL_INFO, PSTR("WG0"));
+  digitalWrite(UHF_Serial.wgd0,LOW);
   return 0;
 }
 
@@ -641,7 +651,6 @@ static int senduint32_t(uint32_t cmdle) {
   int i;
   int tmp;
   int odd=1,even=0;
-  //uint32_t cmd=htobe32(cmdle);
   uint32_t cmd=cmdle;
 
   for (tmp=0,i=0; i<16; i++)
@@ -672,8 +681,8 @@ static int senduint32_t(uint32_t cmdle) {
 }
 
 static int UhrWgSend(uint32_t wgcmd) {
-  senduint32_t(wgcmd);
-  //usleep(10000);
+  if (UHF_Serial.wg==0) AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Can't send WG, no config"));
+  else                  senduint32_t(wgcmd);
   return 0;
 }
 
@@ -768,12 +777,14 @@ void UHFSerialSecond(void) {
           TagTID2tag(&tidtag, &taginfo, &TID);
           if ((taginfo.raw&0xfffff)==0x180e2) { //Monza R6 do not supported passowrds
             uint32_t t32=xor32(TID);
-            //UhrWgSend(uhr, t32);//32 bites
+            UhrWgSend(t32);//32 bites
             AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "WG SEND 1 %llx..."),t32);
+            UhrBeep(1, 1, 1);
           } else {
             uint32_t t32=TID;
-            //UhrWgSend(uhr, TID);//32 bites
+            UhrWgSend(t32);//32 bites
             AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "WG SEND 2 %llx..."),t32);
+            UhrBeep(1, 1, 2);
           }
           UHF_Serial.waitrecv=MODE_RECV_NONE;
           UHF_Serial.mode    =MODE_INVENTORY;
