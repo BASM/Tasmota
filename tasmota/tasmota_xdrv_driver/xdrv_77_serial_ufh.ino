@@ -433,6 +433,10 @@ void UHFSerialInit(void) {
       UHF_Serial.wgd0 = Pin(GPIO_UHF_WGD0, bus);
       UHF_Serial.wgd1 = Pin(GPIO_UHF_WGD1, bus);
 
+      //pinMode(UHF_Serial.wgd0,INPUT);
+      //pinMode(UHF_Serial.wgd1,INPUT);
+      //digitalWrite(UHF_Serial.wgd0,LOW);
+      //digitalWrite(UHF_Serial.wgd1,LOW);
       pinMode(UHF_Serial.wgd0,OUTPUT);
       pinMode(UHF_Serial.wgd1,OUTPUT);
       digitalWrite(UHF_Serial.wgd0,HIGH);
@@ -634,18 +638,24 @@ static uint32_t xor32(uint64_t a) {
   return a^(a>>32);
 }
 
-#define WGPULSETIME 2
-#define WGPAUSETIME 20
+#define WGPULSETIME 10
+#define WGPAUSETIME 200
 static int sendone(void) {
+  //pinMode(UHF_Serial.wgd1, OUTPUT);
   digitalWrite(UHF_Serial.wgd1,LOW);
   usleep(WGPULSETIME);
+  //pinMode(UHF_Serial.wgd1, INPUT);
+  //digitalWrite(UHF_Serial.wgd1,LOW);
   digitalWrite(UHF_Serial.wgd1,HIGH);
   return 0;
 }
 
 static int sendzero(void) {
+  //pinMode(UHF_Serial.wgd0, OUTPUT);
   digitalWrite(UHF_Serial.wgd0,LOW);
   usleep(WGPULSETIME);
+  //pinMode(UHF_Serial.wgd0, INPUT);
+  //digitalWrite(UHF_Serial.wgd0,LOG);
   digitalWrite(UHF_Serial.wgd0,HIGH);
   return 0;
 }
@@ -668,13 +678,11 @@ static int senduint32_t(uint32_t cmdle) {
   else       sendone();
   usleep(WGPAUSETIME);
 
-  if (debug) printf(" ");
   for (i=0; i<32; i++) {
     int b = (cmd>>(31-i))&1;
     if (b) sendone();
     else   sendzero();
     usleep(WGPAUSETIME);
-    if ((i%8)==7) if (debug) printf(" ");
   }
 
   if (odd) sendzero();
@@ -776,7 +784,8 @@ void UHFSerialSecond(void) {
           status=UhrParceReadCardTID(&taginfo, &TID);
           if (status!=0) {
             UHF_Serial.waitrecv=MODE_RECV_NONE;
-            UHF_Serial.mode    =MODE_INVENTORY;}
+            UHF_Serial.mode    =MODE_INVENTORY;
+            break;}
           TagTID2tag(&tidtag, &taginfo, &TID);
           if ((taginfo.raw&0xfffff)==0x180e2) { //Monza R6 do not supported passowrds
             uint32_t t32=xor32(TID);
