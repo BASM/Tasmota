@@ -24,7 +24,6 @@
 #include <TasmotaSerial.h>
 
 #define MODE_INIT        0
-#define MODE_INVENTORY   1
 #define MODE_READTID     2
 #define MODE_BEEP        3
 
@@ -543,39 +542,6 @@ typedef struct _uhrinv_ {
   uint16_t crc;
 } uhrmsginv_t;
 
-static int UhrInventory(void) {
-  int status,len;
-  uint8_t       tbuff[16];
-  uint8_t      *vmsg=tbuff;
-
-  vmsg=(uint8_t*)AddInt8    (vmsg, sizeof(uhrmsg_t)+1 );  //len
-  vmsg=(uint8_t*)AddInt8    (vmsg, UHF_Serial.addr    );  //address
-  vmsg=(uint8_t*)AddInt8    (vmsg, CMD_INVENTORY      );  //cmd
-
-  len = WriteLen(tbuff, vmsg);
-  WriteCRC(tbuff);
-
-  return CmdToReader(tbuff, len);
-}
-
-static int UhrParseInventory(void *vtags, uint16_t *count) { //FIXME XXX secure violation: no check UHF_Serial.idx
-  int i;
-  uhrtag_t *t;
-  uhrmsginv_t  *msg=(uhrmsginv_t  *)UHF_Serial.recv;
-  uhrtag_t *tags=(uhrtag_t *)vtags;
-
-  if (msg->count > 200) { *count=0; return 0; } //sorry, FIXME too
-  t=(uhrtag_t *)msg->mtag;
-  for (i=0; i < msg->count; i++) {
-    if (i>=*count) break;
-    tags[i].wlen=t->wlen/2;
-    memcpy(tags[i].data,t->data,t->wlen);
-
-    t=(uhrtag_t *)(((uint8_t*)t)+sizeof(t->wlen)+t->wlen);//FIXME checkit , one label check only
-  }
-  *count=msg->count;
-  return 0;
-}
 
 int UhrReadCardTID(void *vtag, uint32_t pass) {
   uhrtag_t    *tag=(uhrtag_t *)vtag;
@@ -719,7 +685,7 @@ void UHFSerialSecond(void) {
           break;
         case MODE_RECV_SUCCESS:
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Recived, switch to CYCLE mode..."));
-          UHF_Serial.mode=MODE_INVENTORY;
+          UHF_Serial.mode=MODE_READTID;
           UHF_Serial.waitrecv=MODE_RECV_NONE;
           break;
         case MODE_RECV_ERROR:
@@ -729,45 +695,13 @@ void UHFSerialSecond(void) {
           break;
       }
       break;
-    case MODE_INVENTORY:
-      switch(UHF_Serial.waitrecv) {
-        case MODE_RECV_NONE:
-          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory..."));
-          UhrInventory();
-          UHF_Serial.waitrecv=MODE_RECV_WAIT;
-          break;
-        case MODE_RECV_WAIT:
-          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Wait recv Inventory..."));
-          break;
-        case MODE_RECV_SUCCESS: {
-          uint16_t count;
-          uhrtag_t tags[8]; count=8;
-          UhrParseInventory(tags, &count);
-          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory success... tags count: %i"), count);
-          if (count==0) {
-            UHF_Serial.waitrecv=MODE_RECV_NONE;
-            break;
-          }
-          UHF_Serial.waitrecv=MODE_RECV_NONE;
-          UHF_Serial.mode=MODE_READTID;
-          UHF_Serial.tag=tags[0];
-          //for (i=0; i<count; i++) {
-          //  UhrPrintTag(&tags[i]);
-          //}
-          break; }
-        case MODE_RECV_ERROR:
-          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Inventory error..."));
-          UHF_Serial.waitrecv=MODE_RECV_NONE;
-          break;
-      }
-      break;
     case MODE_READTID:
       switch(UHF_Serial.waitrecv) {
         case MODE_RECV_NONE: {
+        nextstage:
           uhrtag_t *tag = &UHF_Serial.tag;
           dumprecv("Read tid", tag->data, tag->wlen);
-          UhrReadCardTID(&UHF_Serial.tag, 0x00000000);// try password zero //, &taginfo, &TID);
-          //UhrReadCardTID(NULL, 0x00000000);// try password zero //, &taginfo, &TID);
+          UhrReadCardTID(NULL, 0x00000000);
           UHF_Serial.waitrecv=MODE_RECV_WAIT;
           break; }
         case MODE_RECV_WAIT:
@@ -784,7 +718,7 @@ void UHFSerialSecond(void) {
           status=UhrParceReadCardTID(&taginfo, &TID);
           if (status!=0) {
             UHF_Serial.waitrecv=MODE_RECV_NONE;
-            UHF_Serial.mode    =MODE_INVENTORY;
+            UHF_Serial.mode    =MODE_READTID;
             break;}
           TagTID2tag(&tidtag, &taginfo, &TID);
           if ((taginfo.raw&0xfffff)==0x180e2) { //Monza R6 do not supported passowrds
@@ -804,7 +738,7 @@ void UHFSerialSecond(void) {
         case MODE_RECV_ERROR:
           AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_APPLICATION "Error read TID..."));
           UHF_Serial.waitrecv=MODE_RECV_NONE;
-          UHF_Serial.mode    =MODE_INVENTORY;
+          UHF_Serial.mode    =MODE_READTID;
           break;
       }
       break;
@@ -816,7 +750,7 @@ void UHFSerialSecond(void) {
           case MODE_RECV_SUCCESS:
           case MODE_RECV_ERROR:
             UHF_Serial.waitrecv=MODE_RECV_NONE;
-            UHF_Serial.mode    =MODE_INVENTORY;
+            UHF_Serial.mode    =MODE_READTID;
             break;
         }
       break;
