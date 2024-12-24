@@ -821,10 +821,10 @@ bool Xdrv77(uint32_t function) {
     if (function==FUNC_INIT) UHFSerialInit();
   } else {
     switch (function) {
-      case FUNC_EVERY_SECOND:
+      case FUNC_EVERY_250_MSECOND:
         UHFSerialSecond();
         break;
-      case FUNC_EVERY_250_MSECOND:
+      case FUNC_EVERY_50_MSECOND:
         UHFAnswerParce();
         break;
       case FUNC_INIT:
